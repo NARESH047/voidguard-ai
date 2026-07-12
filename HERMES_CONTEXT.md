@@ -18,7 +18,7 @@ VoidGuard AI is an authenticated security operations workspace deployed as a sta
 - Secrets and provider credentials live only in Convex environment variables.
 - Raw credential matches are never written to Convex or sent to model providers.
 - Scan, log, finding, and risk-register access is checked against the authenticated identity.
-- Repository acquisition is bounded by file count, file size, repository size, and extension allowlists.
+- Repository acquisition is limited to public repositories and bounded by file count, file size, repository size, and extension allowlists. Private repositories require future per-user GitHub App authorization.
 - Dependency findings require exact-version output and authoritative HTTPS citations.
 - Generated patches require a separate QA verdict and remain review-only.
 - Production environment values must never be copied into repository files.

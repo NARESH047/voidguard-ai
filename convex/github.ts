@@ -44,7 +44,7 @@ function decodeBase64(value: string) {
 export async function loadRepositoryFiles(repoUrl: string) {
   const { owner, repo, canonicalUrl } = parseGitHubRepoUrl(repoUrl);
   const metadata = await githubJson<RepositoryMetadata>(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
-  if (metadata.private && !process.env.GITHUB_TOKEN) throw new Error("Private repositories require a configured GitHub token.");
+  if (metadata.private) throw new Error("Repository not found or not publicly accessible.");
   if (metadata.size > MAX_REPOSITORY_KB) throw new Error("Repository exceeds the current 250 MB audit limit.");
 
   const branch = metadata.default_branch;
