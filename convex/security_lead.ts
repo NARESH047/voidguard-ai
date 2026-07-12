@@ -3,7 +3,7 @@ import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { createOpenAIClient, lookupDependencyVulnerabilities, type GroundedVulnerability } from "./grounding";
 import { loadRepositoryFiles } from "./github";
-import { detectSecrets, extractDependencies } from "./lib/security";
+import { detectSecrets, extractDependencies, validateRemediationPatch } from "./lib/security";
 
 const agents = {
   lead: "SecurityLead" as const,
@@ -113,9 +113,11 @@ export const runAutonomousAudit = action({
     const log = (agent: Agent, message: string, level: LogLevel = "info") =>
       ctx.runMutation(internal.mutations.appendScanLog, { scanId: args.scanId, agent, message, level });
 
+    const claimed = await ctx.runMutation(internal.mutations.claimScanRun, { scanId: args.scanId });
+    if (!claimed) throw new Error("Scan has already been started or completed.");
+
     let findingCount = 0;
     try {
-      await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "scanning_secrets" });
       await log(agents.lead, `Opening bounded read-only audit for ${scan.repoUrl}.`);
       const repository = await loadRepositoryFiles(scan.repoUrl);
       await log(agents.lead, `Loaded ${repository.files.length} eligible files from ${repository.owner}/${repository.repo}@${repository.branch}.`);
@@ -138,7 +140,7 @@ export const runAutonomousAudit = action({
       }
       await log(
         agents.secrets,
-        findingCount > 0 ? `Secrets sweep produced ${findingCount} redacted finding(s).` : "Secrets sweep completed without credential findings.",
+        findingCount > 0 ? `Bounded secrets pass produced ${findingCount} redacted finding(s).` : "Bounded secrets pass completed without credential findings.",
         findingCount > 0 ? "warning" : "success",
       );
 
@@ -147,7 +149,8 @@ export const runAutonomousAudit = action({
       if (!packageFile) {
         await log(agents.dependencies, "No package.json found; dependency grounding was skipped.", "warning");
       } else {
-        const dependencies = extractDependencies(packageFile.content, 12);
+        const packageLock = repository.files.find((file) => file.path === "package-lock.json")?.content;
+        const dependencies = extractDependencies(packageFile.content, 12, packageLock);
         await log(agents.dependencies, `Grounding ${dependencies.length} prioritized dependencies with OpenAI web search.`);
         for (const dependency of dependencies) {
           let grounding: GroundedVulnerability;
@@ -186,14 +189,14 @@ export const runAutonomousAudit = action({
             await log(agents.remediation, `${dependency.name}: remediation proposal generated at ${Math.round(remediation.confidence * 100)}% confidence.`);
             await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "verifying" });
             const qa = await verifyRemediation(grounding, remediation);
-            if (qa.approved) {
+            if (qa.approved && validateRemediationPatch(remediation.remediationPatch, dependency.name, grounding.fixedVersions)) {
               await ctx.runMutation(internal.mutations.attachPatchToFinding, {
                 findingId,
                 remediationPatch: remediation.remediationPatch,
               });
               await log(agents.qa, `${dependency.name}: patch approved. ${qa.verdict}`, "success");
             } else {
-              await log(agents.qa, `${dependency.name}: patch withheld. ${qa.verdict}`, "warning");
+              await log(agents.qa, `${dependency.name}: patch withheld by model or deterministic package/version validation. ${qa.verdict}`, "warning");
             }
           } catch (error) {
             await log(agents.qa, `${dependency.name}: remediation failed safely (${error instanceof Error ? error.message : "unknown error"}).`, "warning");
@@ -203,7 +206,7 @@ export const runAutonomousAudit = action({
       }
 
       await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "verifying" });
-      await log(agents.qa, "Final integrity check complete: ownership, redaction, citations, and bounded output verified.", "success");
+      await log(agents.qa, "Workflow checks completed; all findings and patches remain subject to human review.", "success");
       await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "completed" });
       await log(agents.lead, `Audit completed with ${findingCount} finding(s). Human review is required before applying patches.`, "success");
       return { findingCount };

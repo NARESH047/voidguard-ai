@@ -45,7 +45,38 @@ function isAuthoritativeUrl(value: string) {
   }
 }
 
-export function parseGroundingOutput(raw: string, packageName: string, version: string): GroundedVulnerability {
+function normalizeSourceUrl(value: string) {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.search = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
+export function extractObservedSourceUrls(output: unknown) {
+  const urls = new Set<string>();
+  if (!Array.isArray(output)) return urls;
+  for (const item of output) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    if (record.type !== "web_search_call" || !record.action || typeof record.action !== "object") continue;
+    const sources = (record.action as Record<string, unknown>).sources;
+    if (!Array.isArray(sources)) continue;
+    for (const source of sources) {
+      if (!source || typeof source !== "object" || Array.isArray(source)) continue;
+      const url = (source as Record<string, unknown>).url;
+      if (typeof url !== "string") continue;
+      const normalized = normalizeSourceUrl(url);
+      if (normalized) urls.add(normalized);
+    }
+  }
+  return urls;
+}
+
+export function parseGroundingOutput(raw: string, packageName: string, version: string, observedSourceUrls: Set<string>): GroundedVulnerability {
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -84,8 +115,12 @@ export function parseGroundingOutput(raw: string, packageName: string, version: 
     }
     return { title: item.title, url: item.url };
   });
-  if (record.affected && !citations.some((citation) => isAuthoritativeUrl(citation.url))) {
-    throw new Error("Affected claims require at least one authoritative citation.");
+  if (!citations.length || !citations.every((citation) => isAuthoritativeUrl(citation.url))) {
+    throw new Error("Grounding claims require authoritative citations.");
+  }
+  const normalizedObserved = new Set([...observedSourceUrls].map(normalizeSourceUrl).filter(Boolean));
+  if (!citations.every((citation) => normalizedObserved.has(normalizeSourceUrl(citation.url)))) {
+    throw new Error("Every citation must match an observed web-search source.");
   }
   return {
     packageName,
@@ -161,5 +196,5 @@ export async function lookupDependencyVulnerabilities(packageName: string, versi
       },
     },
   });
-  return parseGroundingOutput(response.output_text, packageName, version);
+  return parseGroundingOutput(response.output_text, packageName, version, extractObservedSourceUrls(response.output));
 }

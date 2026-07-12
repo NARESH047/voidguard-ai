@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectSecrets, extractDependencies, parseGitHubRepoUrl } from "./lib/security";
+import { detectSecrets, extractDependencies, parseGitHubRepoUrl, validateRemediationPatch } from "./lib/security";
 
 describe("parseGitHubRepoUrl", () => {
   it("normalizes an HTTPS repository URL", () => {
@@ -45,8 +45,8 @@ describe("detectSecrets", () => {
 describe("extractDependencies", () => {
   it("combines production and development dependencies with a deterministic cap", () => {
     const manifest = JSON.stringify({
-      dependencies: { zod: "^4.0.0", axios: "0.21.1" },
-      devDependencies: { vitest: "^4.0.0" },
+      dependencies: { zod: "4.0.0", axios: "0.21.1" },
+      devDependencies: { vitest: "4.0.0" },
     });
     expect(extractDependencies(manifest, 2)).toEqual([
       { name: "axios", version: "0.21.1" },
@@ -56,5 +56,32 @@ describe("extractDependencies", () => {
 
   it("rejects malformed package manifests", () => {
     expect(() => extractDependencies("not-json", 10)).toThrow("valid package.json");
+  });
+
+  it("uses exact installed versions from package-lock.json", () => {
+    const manifest = JSON.stringify({ dependencies: { axios: "^0.21.0" } });
+    const lockfile = JSON.stringify({ lockfileVersion: 3, packages: { "node_modules/axios": { version: "0.21.1" } } });
+    expect(extractDependencies(manifest, 10, lockfile)).toEqual([{ name: "axios", version: "0.21.1" }]);
+  });
+
+  it("skips dependency ranges when no lockfile proves an installed version", () => {
+    const manifest = JSON.stringify({ dependencies: { axios: "^0.21.0", lodash: "4.17.15" } });
+    expect(extractDependencies(manifest, 10)).toEqual([{ name: "lodash", version: "4.17.15" }]);
+  });
+});
+
+describe("validateRemediationPatch", () => {
+  const patch = `--- a/package.json\n+++ b/package.json\n@@ -1,3 +1,3 @@\n-  "lodash": "4.17.15"\n+  "lodash": "4.17.21"`;
+
+  it("accepts a package-only patch using a confirmed fixed version", () => {
+    expect(validateRemediationPatch(patch, "lodash", ["4.17.21"])).toBe(true);
+  });
+
+  it("rejects an unsupported replacement version", () => {
+    expect(validateRemediationPatch(patch.replace("4.17.21", "9.9.9"), "lodash", ["4.17.21"])).toBe(false);
+  });
+
+  it("rejects patches that modify another file", () => {
+    expect(validateRemediationPatch(patch.replaceAll("package.json", "src/index.ts"), "lodash", ["4.17.21"])).toBe(false);
   });
 });

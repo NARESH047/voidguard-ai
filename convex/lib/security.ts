@@ -71,7 +71,31 @@ export function detectSecrets(content: string): SecretMatch[] {
   return findings;
 }
 
-export function extractDependencies(packageJson: string, limit: number) {
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+function lockfileVersions(packageLock: string | undefined) {
+  const versions = new Map<string, string>();
+  if (!packageLock) return versions;
+  try {
+    const parsed = JSON.parse(packageLock) as { packages?: Record<string, { version?: unknown }>; dependencies?: Record<string, { version?: unknown }> };
+    for (const [path, entry] of Object.entries(parsed.packages ?? {})) {
+      if (!path.startsWith("node_modules/") || typeof entry.version !== "string") continue;
+      const name = path.slice("node_modules/".length);
+      if (PACKAGE_NAME.test(name) && EXACT_VERSION.test(entry.version)) versions.set(name, entry.version);
+    }
+    for (const [name, entry] of Object.entries(parsed.dependencies ?? {})) {
+      if (PACKAGE_NAME.test(name) && typeof entry.version === "string" && EXACT_VERSION.test(entry.version) && !versions.has(name)) {
+        versions.set(name, entry.version);
+      }
+    }
+  } catch {
+    throw new Error("Repository lockfile is not a valid package-lock.json file.");
+  }
+  return versions;
+}
+
+export function extractDependencies(packageJson: string, limit: number, packageLock?: string) {
   let parsed: unknown;
   try {
     parsed = JSON.parse(packageJson);
@@ -88,10 +112,26 @@ export function extractDependencies(packageJson: string, limit: number) {
       .filter((entry): entry is [string, string] => typeof entry[1] === "string")
       .sort(([a], [b]) => a.localeCompare(b));
   };
+  const installed = lockfileVersions(packageLock);
   const production = toEntries(manifest.dependencies);
   const productionNames = new Set(production.map(([name]) => name));
   const development = toEntries(manifest.devDependencies).filter(([name]) => !productionNames.has(name));
   return [...production, ...development]
+    .filter(([name, declared]) => PACKAGE_NAME.test(name) && (installed.has(name) || EXACT_VERSION.test(declared)))
     .slice(0, Math.max(0, limit))
-    .map(([name, version]) => ({ name, version: version.replace(/^[~^<>=\s]+/, "") }));
+    .map(([name, declared]) => ({ name, version: installed.get(name) ?? declared }));
+}
+
+export function validateRemediationPatch(patch: string, packageName: string, fixedVersions: string[]) {
+  if (!patch || patch.length > 20_000 || !PACKAGE_NAME.test(packageName)) return false;
+  const lines = patch.split("\n");
+  const oldFiles = lines.filter((line) => line.startsWith("--- "));
+  const newFiles = lines.filter((line) => line.startsWith("+++ "));
+  if (oldFiles.length !== 1 || newFiles.length !== 1 || oldFiles[0] !== "--- a/package.json" || newFiles[0] !== "+++ b/package.json") return false;
+  const escapedName = packageName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const removed = lines.some((line) => new RegExp(`^-\\s*"${escapedName}"\\s*:`).test(line));
+  const addedVersions = lines
+    .map((line) => line.match(new RegExp(`^\\+\\s*"${escapedName}"\\s*:\\s*"([^"]+)"`))?.[1])
+    .filter((value): value is string => Boolean(value));
+  return removed && addedVersions.length === 1 && fixedVersions.includes(addedVersions[0]);
 }

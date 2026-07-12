@@ -51,7 +51,9 @@ export function TerminalDashboard({ isAuthenticated, authLoading, onRequireAuth 
   const [riskError, setRiskError] = useState("");
   const logViewport = useRef<HTMLDivElement>(null);
 
-  const selectedScanId = activeScanId ?? recentScans?.[0]?._id ?? null;
+  const selectedScanId = isAuthenticated
+    ? (activeScanId && recentScans?.some((item) => item._id === activeScanId) ? activeScanId : recentScans?.[0]?._id ?? null)
+    : null;
   const scan = useQuery(api.mutations.getScan, selectedScanId ? { scanId: selectedScanId } : "skip");
   const logs = useQuery(api.mutations.getScanLogs, selectedScanId ? { scanId: selectedScanId } : "skip");
   const findings = useQuery(api.mutations.getScanFindings, selectedScanId ? { scanId: selectedScanId } : "skip");

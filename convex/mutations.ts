@@ -33,6 +33,19 @@ export const createScan = mutation({
   handler: async (ctx, args) => {
     const identity = await requireIdentity(ctx);
     const repository = parseGitHubRepoUrl(args.repoUrl);
+    const recentScans = await ctx.db
+      .query("scans")
+      .withIndex("by_owner_and_startedAt", (q) =>
+        q.eq("ownerTokenIdentifier", identity.tokenIdentifier).gte("startedAt", Date.now() - 60 * 60 * 1000),
+      )
+      .order("desc")
+      .take(6);
+    const activeScan = recentScans.find((scan) => !["completed", "failed"].includes(scan.status));
+    if (activeScan) {
+      if (activeScan.repoUrl === repository.canonicalUrl) return activeScan._id;
+      throw new Error("Finish the active scan before starting another repository.");
+    }
+    if (recentScans.length >= 5) throw new Error("Hourly scan quota reached. Try again later.");
     return ctx.db.insert("scans", {
       ownerTokenIdentifier: identity.tokenIdentifier,
       repoUrl: repository.canonicalUrl,
@@ -88,6 +101,16 @@ export const requireOwnedScan = internalQuery({
   handler: async (ctx, args) => {
     const scan = await ctx.db.get(args.scanId);
     return scan?.ownerTokenIdentifier === args.ownerTokenIdentifier ? scan : null;
+  },
+});
+
+export const claimScanRun = internalMutation({
+  args: { scanId: v.id("scans") },
+  handler: async (ctx, args) => {
+    const scan = await ctx.db.get(args.scanId);
+    if (!scan || scan.status !== "initialized") return false;
+    await ctx.db.patch(args.scanId, { status: "scanning_secrets" });
+    return true;
   },
 });
 
@@ -152,8 +175,14 @@ export const acceptRisk = mutation({
     if (!scan || scan.ownerTokenIdentifier !== identity.tokenIdentifier) throw new Error("Finding not found.");
     const reason = args.reason.trim();
     if (reason.length < 10 || reason.length > 1000) throw new Error("Provide a risk acceptance reason between 10 and 1000 characters.");
+    const existing = await ctx.db
+      .query("risk_register")
+      .withIndex("by_finding", (q) => q.eq("findingId", args.findingId))
+      .unique();
+    if (existing) return existing._id;
     await ctx.db.patch(args.findingId, { status: "accepted_risk" });
     return ctx.db.insert("risk_register", {
+      findingId: args.findingId,
       ownerTokenIdentifier: identity.tokenIdentifier,
       repoUrl: scan.repoUrl,
       findingHash: `${finding.scanId}:${finding._id}`,

@@ -66,11 +66,14 @@ export default defineSchema({
     status: v.union(v.literal("open"), v.literal("remediated"), v.literal("accepted_risk")),
   }).index("by_scan", ["scanId"]),
   risk_register: defineTable({
+    findingId: v.optional(v.id("findings")),
     ownerTokenIdentifier: v.string(),
     repoUrl: v.string(),
     findingHash: v.string(),
     acceptedBy: v.string(),
     acceptedAt: v.number(),
     reason: v.string(),
-  }).index("by_owner_and_repo", ["ownerTokenIdentifier", "repoUrl"]),
+  })
+    .index("by_owner_and_repo", ["ownerTokenIdentifier", "repoUrl"])
+    .index("by_finding", ["findingId"]),
 });
