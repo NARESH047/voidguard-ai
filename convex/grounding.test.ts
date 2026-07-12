@@ -47,6 +47,13 @@ describe("parseGroundingOutput", () => {
     expect(() => parseGroundingOutput(JSON.stringify(payload), "axios", "0.21.1", validSources)).toThrow("NONE severity");
   });
 
+  it("filters non-semver fixed-version output", () => {
+    const payload = JSON.parse(validPayload);
+    payload.fixedVersions = ["github:attacker/repo", "0.21.2"];
+    const result = parseGroundingOutput(JSON.stringify(payload), "axios", "0.21.1", validSources);
+    expect(result.fixedVersions).toEqual(["0.21.2"]);
+  });
+
   it("rejects model-authored citations absent from observed web-search sources", () => {
     expect(() => parseGroundingOutput(validPayload, "axios", "0.21.1", new Set())).toThrow("observed web-search source");
   });

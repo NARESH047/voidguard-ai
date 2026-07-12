@@ -14,6 +14,7 @@ export type GroundedVulnerability = {
 };
 
 const AUTHORITATIVE_DOMAINS = ["nvd.nist.gov", "github.com", "osv.dev", "npmjs.com"];
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 export function buildGroundingQuery(packageName: string, version: string) {
   return [
@@ -129,7 +130,7 @@ export function parseGroundingOutput(raw: string, packageName: string, version: 
     severity: record.severity as GroundedVulnerability["severity"],
     cveIds: assertStringArray(record.cveIds, "cveIds").filter((id) => /^CVE-\d{4}-\d{4,}$/i.test(id)),
     summary: record.summary.slice(0, 4000),
-    fixedVersions: assertStringArray(record.fixedVersions, "fixedVersions").slice(0, 20),
+    fixedVersions: assertStringArray(record.fixedVersions, "fixedVersions").filter((candidate) => EXACT_VERSION.test(candidate)).slice(0, 20),
     citations: citations.slice(0, 12),
     confidence,
   };

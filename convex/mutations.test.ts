@@ -63,8 +63,27 @@ describe("scan authorization and controls", () => {
       evidence: "CVE-2026-0001",
       status: "open",
     });
+    await t.mutation(internal.mutations.attachPatchToFinding, { findingId, remediationPatch: "--- a/package.json\n+++ b/package.json" });
+    const [proposal] = await t.query(api.mutations.getScanFindings, { scanId });
+    expect(proposal.status).toBe("open");
+    expect(proposal.remediationPatch).toContain("package.json");
     const first = await t.mutation(api.mutations.acceptRisk, { findingId, reason: "Accepted for isolated fixture testing." });
     const second = await t.mutation(api.mutations.acceptRisk, { findingId, reason: "Accepted for isolated fixture testing." });
     expect(second).toBe(first);
+  });
+
+  it("rejects risk acceptance for non-open findings", async () => {
+    const t = convexTest(schema, modules).withIdentity({ subject: "alice", issuer: "https://auth.test" });
+    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget" });
+    const findingId = await t.mutation(internal.mutations.createFinding, {
+      scanId,
+      filePath: "package.json",
+      type: "vulnerable_dependency",
+      severity: "HIGH",
+      description: "Already remediated fixture",
+      evidence: "CVE-2026-0002",
+      status: "remediated",
+    });
+    await expect(t.mutation(api.mutations.acceptRisk, { findingId, reason: "This must not be accepted twice." })).rejects.toThrow("Only open findings");
   });
 });

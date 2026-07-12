@@ -3,6 +3,7 @@ import { parseGitHubRepoUrl } from "./lib/security";
 export type RepositoryFile = { path: string; content: string; size: number };
 
 type RepositoryMetadata = { default_branch: string; private: boolean; size: number };
+type CommitResponse = { sha: string };
 type TreeResponse = { truncated: boolean; tree: Array<{ path: string; type: string; size?: number }> };
 type ContentResponse = { type: string; size: number; content?: string; encoding?: string };
 
@@ -37,8 +38,11 @@ function shouldRead(path: string, size: number) {
   return INCLUDED_NAMES.has(name) || INCLUDED_EXTENSIONS.some((extension) => name.endsWith(extension));
 }
 
-function decodeBase64(value: string) {
-  return atob(value.replace(/\s/g, ""));
+export function decodeBoundedBase64(value: string, maxBytes: number) {
+  const binary = atob(value.replace(/\s/g, ""));
+  if (binary.length > maxBytes) return null;
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return { content: new TextDecoder().decode(bytes), size: bytes.byteLength };
 }
 
 export async function loadRepositoryFiles(repoUrl: string) {
@@ -48,8 +52,11 @@ export async function loadRepositoryFiles(repoUrl: string) {
   if (metadata.size > MAX_REPOSITORY_KB) throw new Error("Repository exceeds the current 250 MB audit limit.");
 
   const branch = metadata.default_branch;
+  const commit = await githubJson<CommitResponse>(
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(branch)}`,
+  );
   const tree = await githubJson<TreeResponse>(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(commit.sha)}?recursive=1`,
   );
   if (tree.truncated) throw new Error("Repository tree is too large for a complete bounded audit.");
 
@@ -66,10 +73,12 @@ export async function loadRepositoryFiles(repoUrl: string) {
   for (const candidate of candidates) {
     const encodedPath = candidate.path.split("/").map(encodeURIComponent).join("/");
     const item = await githubJson<ContentResponse>(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}?ref=${encodeURIComponent(branch)}`,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}?ref=${encodeURIComponent(commit.sha)}`,
     );
-    if (item.type !== "file" || item.encoding !== "base64" || !item.content) continue;
-    files.push({ path: candidate.path, content: decodeBase64(item.content), size: item.size });
+    if (item.type !== "file" || item.encoding !== "base64" || !item.content || item.size > MAX_FILE_BYTES) continue;
+    const decoded = decodeBoundedBase64(item.content, MAX_FILE_BYTES);
+    if (!decoded) continue;
+    files.push({ path: candidate.path, content: decoded.content, size: decoded.size });
   }
   if (files.length === 0) throw new Error("No supported source, configuration, or manifest files were found.");
   return { owner, repo, canonicalUrl, branch, files };

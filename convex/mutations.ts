@@ -161,7 +161,7 @@ export const createFinding = internalMutation({
 export const attachPatchToFinding = internalMutation({
   args: { findingId: v.id("findings"), remediationPatch: v.string() },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.findingId, { remediationPatch: args.remediationPatch.slice(0, 20_000), status: "remediated" });
+    await ctx.db.patch(args.findingId, { remediationPatch: args.remediationPatch.slice(0, 20_000) });
   },
 });
 
@@ -180,6 +180,7 @@ export const acceptRisk = mutation({
       .withIndex("by_finding", (q) => q.eq("findingId", args.findingId))
       .unique();
     if (existing) return existing._id;
+    if (finding.status !== "open") throw new Error("Only open findings can be accepted as risk.");
     await ctx.db.patch(args.findingId, { status: "accepted_risk" });
     return ctx.db.insert("risk_register", {
       findingId: args.findingId,

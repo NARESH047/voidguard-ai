@@ -68,6 +68,11 @@ describe("extractDependencies", () => {
     const manifest = JSON.stringify({ dependencies: { axios: "^0.21.0", lodash: "4.17.15" } });
     expect(extractDependencies(manifest, 10)).toEqual([{ name: "lodash", version: "4.17.15" }]);
   });
+
+  it("rejects credential-shaped dependency metadata", () => {
+    const manifest = JSON.stringify({ dependencies: { "sk-proj-abcdefghijklmnopqrstuvwxyz123456": "1.0.0", lodash: "4.17.15" } });
+    expect(extractDependencies(manifest, 10)).toEqual([{ name: "lodash", version: "4.17.15" }]);
+  });
 });
 
 describe("validateRemediationPatch", () => {

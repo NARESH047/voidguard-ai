@@ -117,7 +117,11 @@ export function extractDependencies(packageJson: string, limit: number, packageL
   const productionNames = new Set(production.map(([name]) => name));
   const development = toEntries(manifest.devDependencies).filter(([name]) => !productionNames.has(name));
   return [...production, ...development]
-    .filter(([name, declared]) => PACKAGE_NAME.test(name) && (installed.has(name) || EXACT_VERSION.test(declared)))
+    .filter(([name, declared]) =>
+      PACKAGE_NAME.test(name)
+      && detectSecrets(`${name}:${declared}:${installed.get(name) ?? ""}`).length === 0
+      && (installed.has(name) || EXACT_VERSION.test(declared)),
+    )
     .slice(0, Math.max(0, limit))
     .map(([name, declared]) => ({ name, version: installed.get(name) ?? declared }));
 }

@@ -22,7 +22,7 @@ import {
 const DEFAULT_REPO = "https://github.com/NARESH047/voidguard-fixture";
 const statusCopy: Record<string, string> = {
   initialized: "Queued",
-  scanning_secrets: "Secrets sweep",
+  scanning_secrets: "Bounded secrets pass",
   auditing_dependencies: "Dependency recon",
   writing_remediations: "Writing remediation",
   verifying: "Verifying",
@@ -166,7 +166,7 @@ export function TerminalDashboard({ isAuthenticated, authLoading, onRequireAuth 
                 <h3 className="mt-3 text-sm font-medium leading-5 text-[#e5eee9]">{finding.description}</h3>
                 <p className="mt-2 rounded bg-black/30 p-2 font-mono text-[10px] leading-5 text-[#8da098]">{finding.evidence}</p>
                 {finding.citations?.length ? <div className="mt-3 space-y-1">{finding.citations.map((citation) => <a key={citation.url} href={citation.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] text-[#72dca0] hover:text-[#9dffc3]"><ExternalLink size={10} /> {citation.title}</a>)}</div> : null}
-                {finding.remediationPatch ? <details className="mt-3"><summary className="cursor-pointer text-[11px] text-[#7bffad]">Verified remediation patch</summary><pre className="mt-2 max-h-48 overflow-auto rounded bg-black/40 p-2 text-[10px] leading-5 text-[#9acbad]">{finding.remediationPatch}</pre></details> : null}
+                {finding.remediationPatch ? <details className="mt-3"><summary className="cursor-pointer text-[11px] text-[#7bffad]">Verified remediation proposal</summary><pre className="mt-2 max-h-48 overflow-auto rounded bg-black/40 p-2 text-[10px] leading-5 text-[#9acbad]">{finding.remediationPatch}</pre></details> : null}
                 {finding.status === "open" && <button onClick={() => { setRiskFindingId(finding._id); setRiskReason(""); setRiskError(""); }} className="mt-3 text-[10px] text-[#76877f] hover:text-[#ffc86b]">Accept as documented risk</button>}
                 {finding.status === "accepted_risk" && <div className="mt-3 flex items-center gap-1 text-[10px] text-[#ffc86b]"><CheckCircle2 size={11} /> Accepted risk</div>}
               </article>

@@ -117,6 +117,7 @@ export const runAutonomousAudit = action({
     if (!claimed) throw new Error("Scan has already been started or completed.");
 
     let findingCount = 0;
+    let groundingFailures = 0;
     try {
       await log(agents.lead, `Opening bounded read-only audit for ${scan.repoUrl}.`);
       const repository = await loadRepositoryFiles(scan.repoUrl);
@@ -157,6 +158,7 @@ export const runAutonomousAudit = action({
           try {
             grounding = await lookupDependencyVulnerabilities(dependency.name, dependency.version);
           } catch (error) {
+            groundingFailures += 1;
             await log(
               agents.dependencies,
               `${dependency.name}@${dependency.version}: grounding failed safely (${error instanceof Error ? error.message : "unknown error"}).`,
@@ -205,6 +207,9 @@ export const runAutonomousAudit = action({
         }
       }
 
+      if (groundingFailures > 0) {
+        throw new Error(`Audit incomplete: ${groundingFailures} dependency grounding request(s) failed safely.`);
+      }
       await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "verifying" });
       await log(agents.qa, "Workflow checks completed; all findings and patches remain subject to human review.", "success");
       await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "completed" });
