@@ -116,12 +116,12 @@ export function parseGroundingOutput(raw: string, packageName: string, version: 
     }
     return { title: item.title, url: item.url };
   });
-  if (!citations.length || !citations.every((citation) => isAuthoritativeUrl(citation.url))) {
-    throw new Error("Grounding claims require authoritative citations.");
-  }
   const normalizedObserved = new Set([...observedSourceUrls].map(normalizeSourceUrl).filter(Boolean));
-  if (!citations.every((citation) => normalizedObserved.has(normalizeSourceUrl(citation.url)))) {
-    throw new Error("Every citation must match an observed web-search source.");
+  const verifiedCitations = citations.filter((citation) =>
+    isAuthoritativeUrl(citation.url) && normalizedObserved.has(normalizeSourceUrl(citation.url)),
+  );
+  if (!verifiedCitations.length) {
+    throw new Error("Grounding claims require an authoritative citation matching an observed web-search source.");
   }
   return {
     packageName,
@@ -131,7 +131,7 @@ export function parseGroundingOutput(raw: string, packageName: string, version: 
     cveIds: assertStringArray(record.cveIds, "cveIds").filter((id) => /^CVE-\d{4}-\d{4,}$/i.test(id)),
     summary: record.summary.slice(0, 4000),
     fixedVersions: assertStringArray(record.fixedVersions, "fixedVersions").filter((candidate) => EXACT_VERSION.test(candidate)).slice(0, 20),
-    citations: citations.slice(0, 12),
+    citations: verifiedCitations.slice(0, 12),
     confidence,
   };
 }

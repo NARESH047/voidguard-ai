@@ -54,6 +54,13 @@ describe("parseGroundingOutput", () => {
     expect(result.fixedVersions).toEqual(["0.21.2"]);
   });
 
+  it("drops citations that are not authoritative observed sources", () => {
+    const payload = JSON.parse(validPayload);
+    payload.citations.push({ title: "Unverified", url: "https://example.com/post" });
+    const result = parseGroundingOutput(JSON.stringify(payload), "axios", "0.21.1", validSources);
+    expect(result.citations).toEqual([{ title: "GitHub Advisory", url: citationUrl }]);
+  });
+
   it("rejects model-authored citations absent from observed web-search sources", () => {
     expect(() => parseGroundingOutput(validPayload, "axios", "0.21.1", new Set())).toThrow("observed web-search source");
   });
