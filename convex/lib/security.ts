@@ -153,20 +153,115 @@ export type DependencyIntegrityIssue = {
   evidence: string;
 };
 
-function lockfileProvesVersions(lockfiles: Record<string, string>) {
-  const packageLock = lockfiles["package-lock.json"];
-  if (packageLock) {
-    try {
-      const parsed = JSON.parse(packageLock) as { packages?: Record<string, unknown>; dependencies?: Record<string, unknown> };
-      if (Object.keys(parsed.packages ?? {}).length > 0 || Object.keys(parsed.dependencies ?? {}).length > 0) return true;
-    } catch {
-      return false;
-    }
-  }
-  return false;
+type LockfileMap = Record<string, string>;
+
+type ParsedLockfileVersions = {
+  versions: Map<string, string>;
+  invalid: Set<string>;
+};
+
+function normalizeLockfiles(lockfiles?: string | LockfileMap) {
+  if (!lockfiles) return {} as LockfileMap;
+  return typeof lockfiles === "string" ? { "package-lock.json": lockfiles } : lockfiles;
 }
 
-export function detectDependencyIntegrityIssues(packageJson: string, lockfiles: Record<string, string>): DependencyIntegrityIssue[] {
+function packageNameFromSpecifier(specifier: string) {
+  const trimmed = specifier.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("@")) {
+    const secondAt = trimmed.indexOf("@", 1);
+    return secondAt === -1 ? trimmed : trimmed.slice(0, secondAt);
+  }
+  const lastAt = trimmed.lastIndexOf("@");
+  return lastAt === -1 ? trimmed : trimmed.slice(0, lastAt);
+}
+
+function parsePackageLock(lockfile: string, versions: Map<string, string>, invalid: Set<string>) {
+  const parsed = JSON.parse(lockfile) as { packages?: Record<string, { version?: unknown }>; dependencies?: Record<string, { version?: unknown }> };
+  const consider = (name: string, version: unknown) => {
+    if (!isValidPackageName(name)) return;
+    if (typeof version !== "string" || hasCredentialShape(`${name}:${version}`) || !isExactSemver(version)) {
+      invalid.add(name);
+      versions.delete(name);
+      return;
+    }
+    if (!invalid.has(name)) versions.set(name, version);
+  };
+  for (const [path, entry] of Object.entries(parsed.packages ?? {})) {
+    if (path.startsWith("node_modules/")) consider(path.slice("node_modules/".length), entry.version);
+  }
+  for (const [name, entry] of Object.entries(parsed.dependencies ?? {})) consider(name, entry.version);
+}
+
+function parsePnpmLock(lockfile: string, versions: Map<string, string>, invalid: Set<string>) {
+  const lines = lockfile.split("\n");
+  let currentName: string | null = null;
+  for (const line of lines) {
+    const keyMatch = line.match(/^\s{2}([^:]+):\s*$/);
+    if (keyMatch && !line.trimStart().startsWith("version:")) {
+      const rawKey = keyMatch[1].trim().replace(/^\//, "");
+      const fromKey = rawKey.includes("@") ? packageNameFromSpecifier(rawKey) : rawKey;
+      currentName = fromKey && isValidPackageName(fromKey) ? fromKey : null;
+      continue;
+    }
+    if (!currentName) continue;
+    const versionMatch = line.match(/^\s{4}version:\s*(.+)\s*$/);
+    if (!versionMatch) continue;
+    const version = versionMatch[1].trim().replace(/^['"]|['"]$/g, "");
+    if (hasCredentialShape(`${currentName}:${version}`) || !isExactSemver(version)) {
+      invalid.add(currentName);
+      versions.delete(currentName);
+    } else if (!invalid.has(currentName)) {
+      versions.set(currentName, version);
+    }
+    currentName = null;
+  }
+}
+
+function parseYarnLock(lockfile: string, versions: Map<string, string>, invalid: Set<string>) {
+  const lines = lockfile.split("\n");
+  let currentNames: string[] = [];
+  for (const line of lines) {
+    const entryMatch = line.match(/^([^\s].*):\s*$/);
+    if (entryMatch && entryMatch[1].includes("@")) {
+      currentNames = entryMatch[1]
+        .split(/,\s*/)
+        .map((entry) => packageNameFromSpecifier(entry.replace(/^['"]|['"]$/g, "").trim()))
+        .filter((name): name is string => Boolean(name && isValidPackageName(name)));
+      continue;
+    }
+    if (!currentNames.length) continue;
+    const versionMatch = line.match(/^\s{2}version\s+"([^"]+)"\s*$/);
+    if (!versionMatch) continue;
+    const version = versionMatch[1];
+    for (const name of currentNames) {
+      if (hasCredentialShape(`${name}:${version}`) || !isExactSemver(version)) {
+        invalid.add(name);
+        versions.delete(name);
+      } else if (!invalid.has(name)) {
+        versions.set(name, version);
+      }
+    }
+    currentNames = [];
+  }
+}
+
+function lockfileVersions(lockfiles: LockfileMap): ParsedLockfileVersions {
+  const versions = new Map<string, string>();
+  const invalid = new Set<string>();
+  for (const [name, content] of Object.entries(lockfiles)) {
+    try {
+      if (name === "package-lock.json") parsePackageLock(content, versions, invalid);
+      else if (name === "pnpm-lock.yaml") parsePnpmLock(content, versions, invalid);
+      else if (name === "yarn.lock") parseYarnLock(content, versions, invalid);
+    } catch {
+      invalid.add(name);
+    }
+  }
+  return { versions, invalid };
+}
+
+export function detectDependencyIntegrityIssues(packageJson: string, lockfilesInput: string | LockfileMap = {}) : DependencyIntegrityIssue[] {
   let parsed: { dependencies?: unknown; devDependencies?: unknown };
   try {
     parsed = JSON.parse(packageJson) as typeof parsed;
@@ -179,8 +274,9 @@ export function detectDependencyIntegrityIssues(packageJson: string, lockfiles: 
   const mutable = entries.filter(([, version]) => /^(?:latest|next|\*|https?:|git(?:\+|:)|github:|file:|link:|workspace:)/i.test(version));
   const mutableVersions = new Set(mutable.map(([, version]) => version));
   const ranged = entries.filter(([, version]) => !isExactSemver(version) && !mutableVersions.has(version));
+  const lockfiles = normalizeLockfiles(lockfilesInput);
   const hasLockfile = Object.keys(lockfiles).length > 0;
-  const proven = lockfileProvesVersions(lockfiles);
+  const proven = lockfileVersions(lockfiles).versions.size > 0;
   const issues: DependencyIntegrityIssue[] = [];
   if (entries.length && !hasLockfile) issues.push({ kind: "missing_lockfile", severity: "MEDIUM", description: "No supported dependency lockfile is committed, so transitive versions are not reproducible.", evidence: "No package-lock.json, pnpm-lock.yaml, or yarn.lock was observed" });
   if (hasLockfile && !proven) issues.push({ kind: "incomplete_lockfile", severity: "HIGH", description: "The committed lockfile does not prove installed dependency versions.", evidence: "Lockfile contains no resolved package entries" });
@@ -204,32 +300,13 @@ function hasCredentialShape(value: string) {
   return SECRET_PATTERNS.some(({ pattern }) => new RegExp(pattern.source, pattern.flags).test(value));
 }
 
-function lockfileVersions(packageLock: string | undefined) {
-  const versions = new Map<string, string>();
-  const invalid = new Set<string>();
-  if (!packageLock) return { versions, invalid };
-  const consider = (name: string, version: unknown) => {
-    if (!isValidPackageName(name)) return;
-    if (typeof version !== "string" || hasCredentialShape(`${name}:${version}`) || !isExactSemver(version)) {
-      invalid.add(name);
-      versions.delete(name);
-      return;
-    }
-    if (!invalid.has(name)) versions.set(name, version);
-  };
-  try {
-    const parsed = JSON.parse(packageLock) as { packages?: Record<string, { version?: unknown }>; dependencies?: Record<string, { version?: unknown }> };
-    for (const [path, entry] of Object.entries(parsed.packages ?? {})) {
-      if (path.startsWith("node_modules/")) consider(path.slice("node_modules/".length), entry.version);
-    }
-    for (const [name, entry] of Object.entries(parsed.dependencies ?? {})) consider(name, entry.version);
-  } catch {
-    throw new Error("Repository lockfile is not a valid package-lock.json file.");
-  }
-  return { versions, invalid };
+export type DependencySelection = { name: string; version: string; declaredVersion: string };
+
+function lockfileVersionsForExtraction(lockfiles: LockfileMap) {
+  return lockfileVersions(lockfiles);
 }
 
-export function extractDependencies(packageJson: string, limit: number, packageLock?: string) {
+export function extractDependencies(packageJson: string, limit: number, lockfilesInput?: string | LockfileMap): DependencySelection[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(packageJson);
@@ -246,7 +323,7 @@ export function extractDependencies(packageJson: string, limit: number, packageL
       .filter((entry): entry is [string, string] => typeof entry[1] === "string")
       .sort(([a], [b]) => a.localeCompare(b));
   };
-  const { versions: installed, invalid: invalidLockEntries } = lockfileVersions(packageLock);
+  const { versions: installed, invalid: invalidLockEntries } = lockfileVersionsForExtraction(normalizeLockfiles(lockfilesInput));
   const production = toEntries(manifest.dependencies);
   const productionNames = new Set(production.map(([name]) => name));
   const development = toEntries(manifest.devDependencies).filter(([name]) => !productionNames.has(name));
@@ -258,10 +335,125 @@ export function extractDependencies(packageJson: string, limit: number, packageL
       && (installed.has(name) || isExactSemver(declared)),
     )
     .slice(0, Math.max(0, limit))
-    .map(([name, declared]) => ({ name, version: installed.get(name) ?? declared }));
+    .map(([name, declared]) => ({ name, declaredVersion: declared, version: installed.get(name) ?? declared }));
 }
 
-export function validateRemediationPatch(patch: string, packageName: string, expectedCurrentVersion: string, fixedVersions: string[]) {
+function parseExactVersion(value: string) {
+  const match = value.trim().match(EXACT_SEMVER);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] ? match[4].split(".") : [],
+  };
+}
+
+function compareIdentifiers(left: string, right: string) {
+  const leftNumeric = /^\d+$/.test(left);
+  const rightNumeric = /^\d+$/.test(right);
+  if (leftNumeric && rightNumeric) return Number(left) - Number(right);
+  if (leftNumeric) return -1;
+  if (rightNumeric) return 1;
+  return left.localeCompare(right);
+}
+
+function compareExactVersions(left: string, right: string) {
+  const a = parseExactVersion(left);
+  const b = parseExactVersion(right);
+  if (!a || !b) return null;
+  if (a.major !== b.major) return a.major - b.major;
+  if (a.minor !== b.minor) return a.minor - b.minor;
+  if (a.patch !== b.patch) return a.patch - b.patch;
+  if (!a.prerelease.length && !b.prerelease.length) return 0;
+  if (!a.prerelease.length) return 1;
+  if (!b.prerelease.length) return -1;
+  for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index += 1) {
+    const leftId = a.prerelease[index];
+    const rightId = b.prerelease[index];
+    if (leftId === undefined) return -1;
+    if (rightId === undefined) return 1;
+    const comparison = compareIdentifiers(leftId, rightId);
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
+}
+
+function incrementMinor(version: ReturnType<typeof parseExactVersion>) {
+  if (!version) return null;
+  return `${version.major}.${version.minor + 1}.0`;
+}
+
+function incrementMajor(version: ReturnType<typeof parseExactVersion>) {
+  if (!version) return null;
+  return `${version.major + 1}.0.0`;
+}
+
+function incrementPatch(version: ReturnType<typeof parseExactVersion>) {
+  if (!version) return null;
+  return `${version.major}.${version.minor}.${version.patch + 1}`;
+}
+
+function rangeContains(version: string, lower: string, upperExclusive?: string, upperInclusive?: string) {
+  const lowerComparison = compareExactVersions(version, lower);
+  if (lowerComparison === null || lowerComparison < 0) return false;
+  if (upperExclusive) {
+    const upperComparison = compareExactVersions(version, upperExclusive);
+    return upperComparison !== null && upperComparison < 0;
+  }
+  if (upperInclusive) {
+    const upperComparison = compareExactVersions(version, upperInclusive);
+    return upperComparison !== null && upperComparison <= 0;
+  }
+  return true;
+}
+
+function satisfiesComparator(version: string, comparator: string) {
+  const cleaned = comparator.trim().replace(/^npm:/, "");
+  if (!cleaned || cleaned === "*" || /^x$/i.test(cleaned)) return true;
+  const hyphen = cleaned.match(/^(.+)\s+-\s+(.+)$/);
+  if (hyphen) return rangeContains(version, hyphen[1].trim(), undefined, hyphen[2].trim());
+  if (/^\d+(?:\.\d+)?(?:\.\d+)?(?:[xX*])?$/.test(cleaned)) {
+    const [major = "x", minor = "x", patch = "x"] = cleaned.split(".");
+    const parsed = parseExactVersion(version);
+    if (!parsed) return false;
+    if (!/^[xX*]$/.test(major) && parsed.major !== Number(major)) return false;
+    if (!/^[xX*]$/.test(minor) && parsed.minor !== Number(minor)) return false;
+    if (!/^[xX*]$/.test(patch) && parsed.patch !== Number(patch)) return false;
+    return true;
+  }
+  if (cleaned.startsWith("^")) {
+    const base = parseExactVersion(cleaned.slice(1));
+    if (!base) return false;
+    const lower = cleaned.slice(1);
+    const upper = base.major > 0 ? incrementMajor(base) : base.minor > 0 ? incrementMinor(base) : incrementPatch(base);
+    return rangeContains(version, lower, upper ?? undefined);
+  }
+  if (cleaned.startsWith("~")) {
+    const base = parseExactVersion(cleaned.slice(1));
+    if (!base) return false;
+    const lower = cleaned.slice(1);
+    return rangeContains(version, lower, incrementMinor(base) ?? undefined);
+  }
+  const comparison = cleaned.match(/^(>=|<=|>|<)?\s*(.+)$/);
+  if (!comparison) return false;
+  const op = comparison[1] ?? "=";
+  const target = comparison[2].trim();
+  const cmp = compareExactVersions(version, target);
+  if (cmp === null) return false;
+  if (op === "=") return cmp === 0;
+  if (op === ">=") return cmp >= 0;
+  if (op === "<=") return cmp <= 0;
+  if (op === ">") return cmp > 0;
+  if (op === "<") return cmp < 0;
+  return false;
+}
+
+function satisfiesSemverRange(version: string, range: string) {
+  return range.split("||").some((segment) => segment.trim().split(/\s+/).filter(Boolean).every((comparator) => satisfiesComparator(version, comparator)));
+}
+
+export function validateRemediationPatch(patch: string, packageName: string, expectedManifestVersion: string, fixedVersions: string[], expectedInstalledVersion = expectedManifestVersion) {
   if (!patch || patch.length > 20_000 || !isValidPackageName(packageName)) return false;
   const lines = patch.split("\n");
   const oldFiles = lines.filter((line) => line.startsWith("--- "));
@@ -272,7 +464,8 @@ export function validateRemediationPatch(patch: string, packageName: string, exp
   if (removedLines.length !== 1 || addedLines.length !== 1) return false;
   const escapedName = packageName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const removedVersion = removedLines[0].match(new RegExp(`^-\\s*"${escapedName}"\\s*:\\s*"([^"]+)"\\s*,?\\s*$`))?.[1];
-  if (removedVersion !== expectedCurrentVersion) return false;
+  if (!removedVersion) return false;
+  if (removedVersion !== expectedManifestVersion && !satisfiesSemverRange(expectedInstalledVersion, removedVersion)) return false;
   const addedVersion = addedLines[0].match(new RegExp(`^\\+\\s*"${escapedName}"\\s*:\\s*"([^"]+)"\\s*,?\\s*$`))?.[1];
   return Boolean(addedVersion && isExactSemver(addedVersion) && fixedVersions.includes(addedVersion));
 }

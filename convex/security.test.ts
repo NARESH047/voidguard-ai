@@ -137,8 +137,8 @@ describe("extractDependencies", () => {
       devDependencies: { vitest: "4.0.0" },
     });
     expect(extractDependencies(manifest, 2)).toEqual([
-      { name: "axios", version: "0.21.1" },
-      { name: "zod", version: "4.0.0" },
+      { name: "axios", version: "0.21.1", declaredVersion: "0.21.1" },
+      { name: "zod", version: "4.0.0", declaredVersion: "4.0.0" },
     ]);
   });
 
@@ -149,23 +149,33 @@ describe("extractDependencies", () => {
   it("uses exact installed versions from package-lock.json", () => {
     const manifest = JSON.stringify({ dependencies: { axios: "^0.21.0" } });
     const lockfile = JSON.stringify({ lockfileVersion: 3, packages: { "node_modules/axios": { version: "0.21.1" } } });
-    expect(extractDependencies(manifest, 10, lockfile)).toEqual([{ name: "axios", version: "0.21.1" }]);
+    expect(extractDependencies(manifest, 10, lockfile)).toEqual([{ name: "axios", version: "0.21.1", declaredVersion: "^0.21.0" }]);
+  });
+
+  it("uses exact installed versions from pnpm and yarn lockfiles", () => {
+    const manifest = JSON.stringify({ dependencies: { axios: "^0.21.0", "left-pad": "^1.3.0" } });
+    const pnpmLock = `packages:\n  /axios@0.21.1:\n    version: 0.21.1`;
+    const yarnLock = `left-pad@^1.3.0:\n  version "1.3.0"`;
+    expect(extractDependencies(manifest, 10, { "pnpm-lock.yaml": pnpmLock, "yarn.lock": yarnLock })).toEqual([
+      { name: "axios", version: "0.21.1", declaredVersion: "^0.21.0" },
+      { name: "left-pad", version: "1.3.0", declaredVersion: "^1.3.0" },
+    ]);
   });
 
   it("skips dependency ranges when no lockfile proves an installed version", () => {
     const manifest = JSON.stringify({ dependencies: { axios: "^0.21.0", lodash: "4.17.15" } });
-    expect(extractDependencies(manifest, 10)).toEqual([{ name: "lodash", version: "4.17.15" }]);
+    expect(extractDependencies(manifest, 10)).toEqual([{ name: "lodash", version: "4.17.15", declaredVersion: "4.17.15" }]);
   });
 
   it("rejects credential-shaped dependency metadata", () => {
     const manifest = JSON.stringify({ dependencies: { "sk-proj-abcdefghijklmnopqrstuvwxyz123456": "1.0.0", lodash: "4.17.15" } });
-    expect(extractDependencies(manifest, 10)).toEqual([{ name: "lodash", version: "4.17.15" }]);
+    expect(extractDependencies(manifest, 10)).toEqual([{ name: "lodash", version: "4.17.15", declaredVersion: "4.17.15" }]);
   });
 
   it("rejects placeholder-shaped credential names and unsafe package names", () => {
     const longName = `a${"b".repeat(214)}`;
     const manifest = JSON.stringify({ dependencies: { "sk-example-abcdefghijklmnopqrstuvwxyz123456": "1.0.0", UpperCase: "1.0.0", [longName]: "1.0.0", safe: "1.2.3+build.7" } });
-    expect(extractDependencies(manifest, 10)).toEqual([{ name: "safe", version: "1.2.3+build.7" }]);
+    expect(extractDependencies(manifest, 10)).toEqual([{ name: "safe", version: "1.2.3+build.7", declaredVersion: "1.2.3+build.7" }]);
   });
 
   it("fails closed when lockfile metadata for a dependency is credential-shaped", () => {
@@ -180,6 +190,11 @@ describe("validateRemediationPatch", () => {
 
   it("accepts a package-only patch using a confirmed fixed version", () => {
     expect(validateRemediationPatch(patch, "lodash", "4.17.15", ["4.17.21"])).toBe(true);
+  });
+
+  it("accepts a semver-range patch when the installed version is proven by lockfile evidence", () => {
+    const rangedPatch = `--- a/package.json\n+++ b/package.json\n@@ -1,3 +1,3 @@\n-  "lodash": "^4.17.15"\n+  "lodash": "4.17.21"`;
+    expect(validateRemediationPatch(rangedPatch, "lodash", "^4.17.15", ["4.17.21"], "4.17.15")).toBe(true);
   });
 
   it("rejects an unsupported replacement version", () => {

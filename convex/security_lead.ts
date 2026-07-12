@@ -201,8 +201,7 @@ export const runAutonomousAudit = action({
           findingCount += 1;
           await log(agents.dependencies, `${issue.kind}: ${issue.description}`, "warning");
         }
-        const packageLock = repository.files.find((file) => file.path === "package-lock.json")?.content;
-        const dependencies = extractDependencies(packageFile.content, 12, packageLock);
+        const dependencies = extractDependencies(packageFile.content, 12, lockfiles);
         await log(agents.dependencies, `Grounding ${dependencies.length} prioritized dependencies with OpenAI web search.`);
         for (const dependency of dependencies) {
           let grounding: GroundedVulnerability;
@@ -265,7 +264,7 @@ export const runAutonomousAudit = action({
             await log(agents.remediation, `${dependency.name}: remediation proposal generated at ${Math.round(remediation.confidence * 100)}% confidence.`);
             await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "verifying" });
             const qa = await verifyRemediation(grounding, remediation, auditAsOf);
-            if (qa.approved && validateRemediationPatch(remediation.remediationPatch, dependency.name, dependency.version, grounding.fixedVersions)) {
+            if (qa.approved && validateRemediationPatch(remediation.remediationPatch, dependency.name, dependency.declaredVersion, grounding.fixedVersions, dependency.version)) {
               await ctx.runMutation(internal.mutations.attachPatchToFinding, {
                 findingId: storedFindingId,
                 remediationPatch: remediation.remediationPatch,
