@@ -2,7 +2,7 @@ import { DatabaseProvider } from "@/components/Provider";
 import "./globals.css";
 
 export const metadata = {
-  title: "VoidGuard AI | Autonomous Security Agency",
+  title: "VoidGuard AI | Evidence-first public triage",
   description:
     "Open, no-login security audits for public GitHub repositories with redacted evidence and source-bound advisory grounding.",
 };

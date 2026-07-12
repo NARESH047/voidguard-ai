@@ -5,7 +5,7 @@ import {
   ArrowDown,
   ArrowUpRight,
   CheckCircle2,
-  CircleDot,
+
   GitBranch,
   Globe2,
   ScanLine,
@@ -29,7 +29,7 @@ export default function Home() {
           <div className="hidden items-center gap-7 text-[13px] text-[#8a8f98] md:flex">
             <a className="transition hover:text-[#f7f8f8]" href="#workflow">How it works</a>
             <a className="transition hover:text-[#f7f8f8]" href="#workspace">Public workspace</a>
-            <span className="flex items-center gap-2"><CircleDot size={12} className="text-[#43c887]" /> Systems operational</span>
+            <span>Bounded public-repository triage</span>
           </div>
           <a href="#workspace" className="primary-button px-4 py-2.5 text-xs">Scan a public repo <ArrowUpRight size={14} /></a>
         </div>
@@ -37,19 +37,19 @@ export default function Home() {
 
       <section id="top" className="relative z-10 mx-auto flex min-h-[690px] w-full max-w-6xl flex-col items-center justify-center px-5 pb-24 pt-20 text-center sm:px-8">
         <div className="public-launch-pill"><Globe2 size={13} /> Open to everyone · no account required</div>
-        <h1 className="linear-hero mt-8 max-w-5xl">Security review for any<br className="hidden sm:block" /> public GitHub repository.</h1>
-        <p className="mt-7 max-w-2xl text-base leading-7 text-[#8a8f98] sm:text-lg">Paste a repository link. VoidGuard runs a bounded, read-only investigation, redacts credential evidence, grounds dependency risk in live advisories, and withholds unsafe remediation proposals.</p>
+        <h1 className="linear-hero mt-8 max-w-5xl">Bounded security triage for<br className="hidden sm:block" /> supported public repositories.</h1>
+        <p className="mt-7 max-w-2xl text-base leading-7 text-[#8a8f98] sm:text-lg">Paste a repository link. VoidGuard runs a bounded, read-only investigation across secrets, dangerous code and configuration patterns, CI/auth/TLS posture, and exact dependency evidence—then withholds unsupported claims and patches.</p>
         <div className="mt-9 flex flex-col items-center gap-3 sm:flex-row">
           <a href="#workspace" className="primary-button px-5 py-3.5 text-sm"><Sparkles size={15} /> Start a public audit <ArrowDown size={14} /></a>
           <a href="#workflow" className="subtle-button px-5 py-3.5 text-sm">Review the safeguards</a>
         </div>
-        <div className="mt-12 flex flex-wrap justify-center gap-x-8 gap-y-3 text-xs text-[#8a8f98]"><span>Read-only GitHub access</span><span>40-file maximum</span><span>Source-bound citations</span><span>Human-controlled proposals</span></div>
+        <div className="mt-12 flex flex-wrap justify-center gap-x-8 gap-y-3 text-xs text-[#8a8f98]"><span>Read-only GitHub access</span><span>Risk-prioritized 40-file bound</span><span>Fresh source-bound citations</span><span>Human-controlled proposals</span></div>
       </section>
 
       <section id="workflow" className="relative z-10 mx-auto w-full max-w-7xl px-5 pb-20 sm:px-8 lg:pb-28">
         <div className="workflow-strip">
-          <Step number="01" title="Share a public link" copy="Private repository? Make it public on GitHub first, then paste the repository URL." icon={<GitBranch size={16} />} />
-          <Step number="02" title="Watch the crew investigate" copy="A bounded file set is inspected locally while exact dependency versions are checked against observed advisory sources." icon={<ScanLine size={16} />} />
+          <Step number="01" title="Share a public link" copy="Private repositories are unsupported. Do not publish sensitive code solely to scan it." icon={<GitBranch size={16} />} />
+          <Step number="02" title="Watch the crew investigate" copy="A risk-prioritized bounded file set is checked deterministically while exact dependency versions are searched against current primary advisory sources." icon={<ScanLine size={16} />} />
           <Step number="03" title="Review evidence, not claims" copy="Raw credentials stay redacted. Patches remain proposals and pass model plus deterministic validation." icon={<CheckCircle2 size={16} />} />
         </div>
       </section>

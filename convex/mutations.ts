@@ -17,6 +17,7 @@ const scanStatus = v.union(
 const agent = v.union(
   v.literal("SecurityLead"),
   v.literal("SecretsScanner"),
+  v.literal("StaticAnalyzer"),
   v.literal("DependencyAuditor"),
   v.literal("RemediationWriter"),
   v.literal("QA_Verifier"),
@@ -163,6 +164,30 @@ export const renewScanLease = internalMutation({
   },
 });
 
+export const recordScanContext = internalMutation({
+  args: {
+    scanId: v.id("scans"),
+    auditAsOf: v.string(),
+    commitSha: v.string(),
+    branch: v.string(),
+    eligibleFileCount: v.number(),
+    inspectedFileCount: v.number(),
+    omittedFileCount: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const scan = await ctx.db.get(args.scanId);
+    if (!scan || ["completed", "failed"].includes(scan.status)) throw new Error("Active scan not found.");
+    await ctx.db.patch(args.scanId, {
+      auditAsOf: args.auditAsOf.slice(0, 32),
+      commitSha: args.commitSha,
+      branch: args.branch.slice(0, 255),
+      eligibleFileCount: args.eligibleFileCount,
+      inspectedFileCount: args.inspectedFileCount,
+      omittedFileCount: args.omittedFileCount,
+    });
+  },
+});
+
 const legalTransitions: Record<string, readonly string[]> = {
   initialized: [],
   scanning_secrets: ["auditing_dependencies"],
@@ -209,6 +234,7 @@ export const createFinding = internalMutation({
     scanId: v.id("scans"),
     filePath: v.string(),
     type: v.union(v.literal("leaked_secret"), v.literal("vulnerable_dependency"), v.literal("security_misconfig")),
+    claimType: v.optional(v.union(v.literal("confirmed_issue"), v.literal("review_required"), v.literal("unknown"))),
     severity: v.union(v.literal("CRITICAL"), v.literal("HIGH"), v.literal("MEDIUM"), v.literal("LOW")),
     description: v.string(),
     evidence: v.string(),

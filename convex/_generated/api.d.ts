@@ -10,6 +10,7 @@
 
 import type * as github from "../github.js";
 import type * as grounding from "../grounding.js";
+import type * as lib_instructions from "../lib/instructions.js";
 import type * as lib_security from "../lib/security.js";
 import type * as lib_session from "../lib/session.js";
 import type * as mutations from "../mutations.js";
@@ -25,6 +26,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   github: typeof github;
   grounding: typeof grounding;
+  "lib/instructions": typeof lib_instructions;
   "lib/security": typeof lib_security;
   "lib/session": typeof lib_session;
   mutations: typeof mutations;

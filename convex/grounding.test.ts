@@ -6,7 +6,7 @@ const validSources = new Set([citationUrl]);
 const validPayload = JSON.stringify({
   packageName: "axios",
   version: "0.21.1",
-  affected: true,
+  assessment: "AFFECTED",
   severity: "HIGH",
   cveIds: ["CVE-2021-3749"],
   summary: "The requested version is affected by a published advisory.",
@@ -16,18 +16,21 @@ const validPayload = JSON.stringify({
 });
 
 describe("buildGroundingQuery", () => {
-  it("requests exact-version evidence from authoritative sources", () => {
-    const query = buildGroundingQuery("axios", "0.21.1");
+  it("requires current, exact-version evidence and explicit unknown conclusions", () => {
+    const query = buildGroundingQuery("axios", "0.21.1", "2026-07-12");
     expect(query).toContain("axios@0.21.1");
-    expect(query).toContain("exact version");
-    expect(query).toContain("NVD");
+    expect(query).toContain("2026-07-12");
+    expect(query).toContain("fresh web search");
+    expect(query).toContain("UNKNOWN");
+    expect(query).toContain("Absence of evidence is not evidence of safety");
+    expect(query).not.toContain("Return an unaffected result when authoritative evidence is absent");
   });
 });
 
 describe("parseGroundingOutput", () => {
   it("accepts an exact package result with observed authoritative citations", () => {
     const result = parseGroundingOutput(validPayload, "axios", "0.21.1", validSources);
-    expect(result.affected).toBe(true);
+    expect(result.assessment).toBe("AFFECTED");
     expect(result.cveIds).toEqual(["CVE-2021-3749"]);
   });
 
@@ -41,10 +44,39 @@ describe("parseGroundingOutput", () => {
     expect(() => parseGroundingOutput(JSON.stringify(payload), "axios", "0.21.1", new Set(["https://example.com/post"]))).toThrow("authoritative citation");
   });
 
+  it("rejects generic pages on otherwise authoritative domains", () => {
+    const payload = JSON.parse(validPayload);
+    payload.citations = [{ title: "NVD home", url: "https://nvd.nist.gov/" }];
+    expect(() => parseGroundingOutput(JSON.stringify(payload), "axios", "0.21.1", new Set(["https://nvd.nist.gov/"]))).toThrow("advisory record");
+  });
+
   it("rejects affected claims with NONE severity", () => {
     const payload = JSON.parse(validPayload);
     payload.severity = "NONE";
     expect(() => parseGroundingOutput(JSON.stringify(payload), "axios", "0.21.1", validSources)).toThrow("NONE severity");
+  });
+
+  it("preserves uncertainty instead of treating missing evidence as safe", () => {
+    const payload = JSON.parse(validPayload);
+    payload.assessment = "UNKNOWN";
+    payload.severity = "NONE";
+    payload.cveIds = [];
+    payload.fixedVersions = [];
+    payload.summary = "Fresh authoritative sources did not establish exact-version status.";
+    payload.citations = [];
+    const result = parseGroundingOutput(JSON.stringify(payload), "axios", "0.21.1", new Set());
+    expect(result.assessment).toBe("UNKNOWN");
+  });
+
+  it("allows unknown conclusions to cite an observed primary package source without calling it an advisory", () => {
+    const payload = JSON.parse(validPayload);
+    payload.assessment = "UNKNOWN";
+    payload.severity = "NONE";
+    payload.cveIds = [];
+    payload.fixedVersions = [];
+    payload.citations = [{ title: "npm package", url: "https://www.npmjs.com/package/axios" }];
+    const result = parseGroundingOutput(JSON.stringify(payload), "axios", "0.21.1", new Set(["https://www.npmjs.com/package/axios"]));
+    expect(result.assessment).toBe("UNKNOWN");
   });
 
   it("filters non-semver fixed-version output", () => {
@@ -63,6 +95,12 @@ describe("parseGroundingOutput", () => {
 
   it("rejects model-authored citations absent from observed web-search sources", () => {
     expect(() => parseGroundingOutput(validPayload, "axios", "0.21.1", new Set())).toThrow("observed web-search source");
+  });
+
+  it("rejects legacy binary affected fields", () => {
+    const payload = JSON.parse(validPayload);
+    payload.affected = true;
+    expect(() => parseGroundingOutput(JSON.stringify(payload), "axios", "0.21.1", validSources)).toThrow("unexpected fields");
   });
 
   it("rejects malformed model output", () => {

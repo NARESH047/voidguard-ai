@@ -124,9 +124,10 @@ export function TerminalDashboard() {
     } catch (caught) {
       const message = caught instanceof Error ? caught.message.toLowerCase() : "";
       if (message.includes("capacity")) setError("VoidGuard is at hourly capacity. Please try again later.");
+      else if (message.includes("github api unavailable")) setError("GitHub is temporarily unavailable or rate limited. Please try this public repository again shortly.");
       else if (message.includes("active scan")) setError("This tab already has an active scan. Let it finish before starting another.");
       else if (message.includes("valid https github")) setError("Enter a valid public GitHub repository URL, for example https://github.com/owner/repository.");
-      else if (message.includes("publicly accessible") || message.includes("not accessible") || message.includes("not found")) setError("Repository unavailable. If it is private, make it public on GitHub, then paste its public link.");
+      else if (message.includes("publicly accessible") || message.includes("not accessible") || message.includes("not found")) setError("Repository unavailable. Private repositories are unsupported; do not publish sensitive code solely to scan it.");
       else setError("The audit could not start. Verify the public GitHub URL and try again.");
     } finally {
       setRunning(false);
@@ -170,7 +171,7 @@ export function TerminalDashboard() {
         </div>
         <div className="mt-3 flex flex-col justify-between gap-2 text-xs text-[#8a8f98] sm:flex-row">
           <span>{repoLabel}</span>
-          <span>Private repository? Make it public first, then share its GitHub link.</span>
+          <span>Private repositories are unsupported. Do not publish sensitive code solely to scan it.</span>
         </div>
         {error && <p role="alert" className="mt-4 flex items-start gap-2 rounded-lg border border-[#ff7272]/20 bg-[#ff7272]/[0.06] px-3 py-2.5 text-sm text-[#ffaaaa]"><AlertTriangle size={15} className="mt-0.5 shrink-0" /> {error}</p>}
       </div>
@@ -190,7 +191,11 @@ export function TerminalDashboard() {
 
         <section className="border-b border-white/[0.06] p-5 lg:border-b-0 lg:border-r lg:p-6">
           <div className="mb-4 flex items-center justify-between border-b border-white/[0.06] pb-4">
-            <div><div className="workspace-kicker">Live agent stream</div><div className="mt-1 text-sm text-[#f7f8f8]">{scan?.repoUrl.replace("https://github.com/", "") ?? "Awaiting a public repository"}</div></div>
+            <div>
+              <div className="workspace-kicker">Live agent stream</div>
+              <div className="mt-1 text-sm text-[#f7f8f8]">{scan?.repoUrl.replace("https://github.com/", "") ?? "Awaiting a public repository"}</div>
+              {scan?.commitSha && <div className="mt-1 text-[10px] text-[#8a8f98]">{scan.inspectedFileCount ?? 0}/{scan.eligibleFileCount ?? 0} eligible files · {scan.commitSha.slice(0, 12)}</div>}
+            </div>
             <span role="status" aria-live="polite" className={`rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-wider ${scan?.status === "completed" ? "border-[#43c887]/30 text-[#72dca0]" : scan?.status === "failed" ? "border-[#ff7272]/30 text-[#ff9a9a]" : "border-[#7170ff]/30 text-[#9da4ff]"}`}>{scan ? statusCopy[scan.status] : "waiting"}</span>
           </div>
           <div ref={logViewport} aria-live="polite" aria-busy={Boolean(selectedScanId && logs === undefined)} className={`${scan ? "h-[460px]" : "h-[280px]"} overflow-y-auto pr-2 font-mono text-xs leading-6 transition-[height]`}>
@@ -208,15 +213,15 @@ export function TerminalDashboard() {
           <div className="max-h-[520px] space-y-3 overflow-y-auto pr-1">
             {findings?.length ? findings.map((finding) => (
               <article key={finding._id} className="finding-card">
-                <div className="flex items-center justify-between gap-3"><SeverityBadge severity={finding.severity} /><span className="truncate text-[10px] text-[#8a8f98]">{finding.filePath}</span></div>
+                <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-1.5"><SeverityBadge severity={finding.severity} /><ClaimBadge claimType={finding.claimType} /></div><span className="truncate text-[10px] text-[#8a8f98]">{finding.filePath}</span></div>
                 <h3 className="mt-3 text-sm font-medium leading-5 text-[#e2e4e7]">{finding.description}</h3>
                 <p className="mt-2 rounded-md bg-black/25 p-2 font-mono text-[10px] leading-5 text-[#9da4ab]">{finding.evidence}</p>
                 {finding.citations?.length ? <div className="mt-3 space-y-1">{finding.citations.map((citation) => <a key={citation.url} href={citation.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] text-[#9da4ff] hover:text-[#b8b7ff]"><ExternalLink size={10} /> {citation.title}</a>)}</div> : null}
-                {finding.remediationPatch ? <details className="mt-3"><summary className="cursor-pointer text-[11px] text-[#9da4ff]">Verified remediation proposal</summary><pre className="mt-2 max-h-48 overflow-auto rounded-md bg-black/35 p-2 text-[10px] leading-5 text-[#b7bad9]">{finding.remediationPatch}</pre></details> : null}
+                {finding.remediationPatch ? <details className="mt-3"><summary className="cursor-pointer text-[11px] text-[#9da4ff]">Policy-checked remediation proposal</summary><pre className="mt-2 max-h-48 overflow-auto rounded-md bg-black/35 p-2 text-[10px] leading-5 text-[#b7bad9]">{finding.remediationPatch}</pre></details> : null}
                 {finding.status === "open" && scan?.status === "completed" && <button onClick={() => { setRiskFindingId(finding._id); setRiskReason(""); setRiskError(""); }} className="mt-2 -ml-2 rounded-md px-2 py-2 text-xs text-[#8a8f98] hover:bg-white/[0.04] hover:text-[#e8b84c]">Document accepted risk</button>}
                 {finding.status === "accepted_risk" && <div className="mt-3 flex items-center gap-1 text-[10px] text-[#e8b84c]"><CheckCircle2 size={11} /> Accepted risk</div>}
               </article>
-            )) : selectedScanId && findings === undefined ? <div className="flex min-h-56 items-center justify-center text-xs text-[#8a8f98]">Loading findings…</div> : !selectedScanId ? <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center text-xs leading-5 text-[#8a8f98]"><CircleDotDashed size={24} /><span>Run an audit to see findings.</span></div> : <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center text-xs leading-5 text-[#8a8f98]"><CheckCircle2 size={24} /><span>No findings in this scan.</span></div>}
+            )) : selectedScanId && findings === undefined ? <div className="flex min-h-56 items-center justify-center text-xs text-[#8a8f98]">Loading findings…</div> : !selectedScanId ? <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center text-xs leading-5 text-[#8a8f98]"><CircleDotDashed size={24} /><span>Run an audit to see findings.</span></div> : scan?.status === "completed" ? <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center text-xs leading-5 text-[#8a8f98]"><CheckCircle2 size={24} /><span>No findings in the inspected scope.</span></div> : scan?.status === "failed" ? <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center text-xs leading-5 text-[#ff9a9a]"><AlertTriangle size={24} /><span>Audit failed or remained incomplete. Review the agent stream.</span></div> : <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center text-xs leading-5 text-[#8a8f98]"><Activity size={24} className="animate-pulse" /><span>Analysis is still in progress.</span></div>}
           </div>
         </aside>
       </div>
@@ -224,6 +229,12 @@ export function TerminalDashboard() {
       {riskFindingId && sessionToken && <div className="border-t border-white/[0.06] bg-[#0b0c0e] p-5"><form onSubmit={submitRisk} className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-end"><label className="field-label flex-1">Risk acceptance reason<input required minLength={10} maxLength={1000} value={riskReason} onChange={(event) => setRiskReason(event.target.value)} placeholder="Document why this risk is acceptable…" /></label><button className="primary-button justify-center px-4 py-3 text-sm">Record decision</button><button type="button" onClick={() => setRiskFindingId(null)} className="subtle-button justify-center">Cancel</button></form>{riskError && <p role="alert" className="mx-auto mt-2 max-w-3xl text-xs text-[#ff9a9a]">{riskError}</p>}</div>}
     </div>
   );
+}
+
+function ClaimBadge({ claimType }: { claimType?: "confirmed_issue" | "review_required" | "unknown" }) {
+  const label = claimType === "confirmed_issue" ? "Confirmed" : claimType === "unknown" ? "Unknown evidence" : "Review required";
+  const className = claimType === "confirmed_issue" ? "border-[#43c887]/20 text-[#72dca0]" : claimType === "unknown" ? "border-[#e8b84c]/20 text-[#e8c878]" : "border-[#7170ff]/20 text-[#9da4ff]";
+  return <span className={`rounded border px-1.5 py-1 text-[8px] uppercase tracking-wider ${className}`}>{label}</span>;
 }
 
 function SeverityBadge({ severity }: { severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" }) {
