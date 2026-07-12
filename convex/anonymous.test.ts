@@ -5,6 +5,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
+process.env.ANONYMOUS_SESSION_SECRET = "test-anonymous-session-secret";
 const sessionToken = "11111111-1111-4111-8111-111111111111";
 
 describe("anonymous public scans", () => {

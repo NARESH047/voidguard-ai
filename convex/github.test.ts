@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { decodeBoundedBase64 } from "./github";
+import { describe, expect, it, vi } from "vitest";
+import { decodeBoundedBase64, loadRepositoryFiles } from "./github";
 
 describe("decodeBoundedBase64", () => {
   it("decodes content at the exact byte limit", () => {
@@ -18,5 +18,21 @@ describe("decodeBoundedBase64", () => {
   it("rejects malformed and allocation-amplifying input", () => {
     expect(decodeBoundedBase64("%%%", 100)).toBeNull();
     expect(decodeBoundedBase64("A".repeat(10_000), 4)).toBeNull();
+  });
+});
+
+describe("public repository eligibility", () => {
+  it("probes repository metadata without ambient private authority", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("not found", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("GITHUB_TOKEN", "synthetic-test-token");
+    try {
+      await expect(loadRepositoryFiles("https://github.com/acme/private-repo")).rejects.toThrow("not publicly accessible");
+      const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      expect((request.headers as Record<string, string>).Authorization).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
   });
 });

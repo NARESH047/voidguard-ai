@@ -4,7 +4,7 @@ import { v } from "convex/values";
 import { createOpenAIClient, lookupDependencyVulnerabilities, type GroundedVulnerability } from "./grounding";
 import { loadRepositoryFiles } from "./github";
 import { detectSecrets, extractDependencies, validateRemediationPatch } from "./lib/security";
-import { anonymousOwnerKey } from "./lib/session";
+import { anonymousOwnerKey, verifyAuditProof } from "./lib/session";
 
 const agents = {
   lead: "SecurityLead" as const,
@@ -101,9 +101,10 @@ async function verifyRemediation(grounding: GroundedVulnerability, remediation: 
 }
 
 export const runAutonomousAudit = action({
-  args: { scanId: v.id("scans"), sessionToken: v.string() },
+  args: { scanId: v.id("scans"), sessionToken: v.string(), proofNonce: v.string() },
   handler: async (ctx, args) => {
-    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
+    if (!await verifyAuditProof(args.sessionToken, args.scanId, args.proofNonce)) throw new Error("Audit challenge failed.");
+    const ownerTokenIdentifier = await anonymousOwnerKey(args.sessionToken);
     const scan = await ctx.runQuery(internal.mutations.requireOwnedScan, {
       scanId: args.scanId,
       ownerTokenIdentifier,
@@ -113,8 +114,9 @@ export const runAutonomousAudit = action({
     const log = (agent: Agent, message: string, level: LogLevel = "info") =>
       ctx.runMutation(internal.mutations.appendScanLog, { scanId: args.scanId, agent, message, level });
 
-    const claimed = await ctx.runMutation(internal.mutations.claimScanRun, { scanId: args.scanId });
-    if (!claimed) throw new Error("Scan has already been started or completed.");
+    const claimResult = await ctx.runMutation(internal.mutations.claimScanRun, { scanId: args.scanId });
+    if (claimResult === "capacity") throw new Error("VoidGuard is at hourly capacity. Try again later.");
+    if (claimResult !== "claimed") throw new Error("Scan has already been started or completed.");
 
     let findingCount = 0;
     let workflowFailures = 0;
@@ -127,7 +129,7 @@ export const runAutonomousAudit = action({
       for (const file of repository.files) {
         const matches = detectSecrets(file.content);
         for (const match of matches) {
-          await ctx.runMutation(internal.mutations.createFinding, {
+          const storedSecret = await ctx.runMutation(internal.mutations.createFinding, {
             scanId: args.scanId,
             filePath: file.path,
             type: "leaked_secret",
@@ -136,6 +138,7 @@ export const runAutonomousAudit = action({
             evidence: match.evidence,
             status: "open",
           });
+          if (!storedSecret) break;
           findingCount += 1;
           await log(agents.secrets, `Redacted credential-like material detected in ${file.path}.`, "error");
         }
@@ -184,6 +187,11 @@ export const runAutonomousAudit = action({
             citations: grounding.citations,
             status: "open",
           });
+          if (!findingId) {
+            await log(agents.dependencies, "Finding output limit reached; remaining dependency findings were withheld.", "warning");
+            break;
+          }
+          const storedFindingId = findingId;
           findingCount += 1;
           await log(agents.dependencies, `${dependency.name}@${dependency.version}: affected version confirmed by authoritative sources.`, "warning");
 
@@ -195,7 +203,7 @@ export const runAutonomousAudit = action({
             const qa = await verifyRemediation(grounding, remediation);
             if (qa.approved && validateRemediationPatch(remediation.remediationPatch, dependency.name, grounding.fixedVersions)) {
               await ctx.runMutation(internal.mutations.attachPatchToFinding, {
-                findingId,
+                findingId: storedFindingId,
                 remediationPatch: remediation.remediationPatch,
               });
               await log(agents.qa, `${dependency.name}: patch approved. ${qa.verdict}`, "success");

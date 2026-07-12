@@ -14,8 +14,8 @@ const INCLUDED_NAMES = new Set(["package.json", "package-lock.json", "pnpm-lock.
 const INCLUDED_EXTENSIONS = [".js", ".jsx", ".ts", ".tsx", ".json", ".yml", ".yaml", ".toml", ".ini", ".conf"];
 const EXCLUDED_PREFIXES = ["node_modules/", ".git/", "dist/", "build/", ".next/", "out/", "vendor/"];
 
-function githubHeaders() {
-  const token = process.env.GITHUB_TOKEN;
+function githubHeaders(authenticated: boolean) {
+  const token = authenticated ? process.env.GITHUB_TOKEN : undefined;
   return {
     Accept: "application/vnd.github+json",
     "User-Agent": "VoidGuard-AI",
@@ -23,12 +23,9 @@ function githubHeaders() {
   };
 }
 
-async function githubJson<T>(path: string): Promise<T> {
-  const response = await fetch(`https://api.github.com${path}`, { headers: githubHeaders() });
-  if (!response.ok) {
-    const hint = response.status === 404 ? "Repository not found or not accessible." : `GitHub API returned HTTP ${response.status}.`;
-    throw new Error(hint);
-  }
+async function githubJson<T>(path: string, authenticated = true): Promise<T> {
+  const response = await fetch(`https://api.github.com${path}`, { headers: githubHeaders(authenticated) });
+  if (!response.ok) throw new Error("Repository not found or not publicly accessible.");
   return response.json() as Promise<T>;
 }
 
@@ -59,7 +56,7 @@ export function decodeBoundedBase64(value: string, maxBytes: number) {
 
 export async function loadRepositoryFiles(repoUrl: string) {
   const { owner, repo, canonicalUrl } = parseGitHubRepoUrl(repoUrl);
-  const metadata = await githubJson<RepositoryMetadata>(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+  const metadata = await githubJson<RepositoryMetadata>(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, false);
   if (metadata.private) throw new Error("Repository not found or not publicly accessible.");
   if (metadata.size > MAX_REPOSITORY_KB) throw new Error("Repository exceeds the current 250 MB audit limit.");
 

@@ -1,4 +1,3 @@
-import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
@@ -20,7 +19,6 @@ const logLevel = v.union(
 );
 
 export default defineSchema({
-  ...authTables,
   waitlist: defineTable({
     email: v.string(),
     repositoryUrl: v.string(),
@@ -32,6 +30,8 @@ export default defineSchema({
     repoUrl: v.string(),
     status: scanStatus,
     claimedAt: v.optional(v.number()),
+    logCount: v.optional(v.number()),
+    findingCount: v.optional(v.number()),
     startedAt: v.number(),
     completedAt: v.optional(v.number()),
     errorMessage: v.optional(v.string()),
@@ -39,7 +39,8 @@ export default defineSchema({
     .index("by_owner", ["ownerTokenIdentifier"])
     .index("by_owner_and_startedAt", ["ownerTokenIdentifier", "startedAt"])
     .index("by_owner_and_status", ["ownerTokenIdentifier", "status"])
-    .index("by_startedAt", ["startedAt"]),
+    .index("by_startedAt", ["startedAt"])
+    .index("by_claimedAt", ["claimedAt"]),
   scanLogs: defineTable({
     scanId: v.id("scans"),
     agent: v.union(

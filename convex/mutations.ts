@@ -38,7 +38,7 @@ function exposeScan(scan: Doc<"scans">) {
 export const createScan = mutation({
   args: { repoUrl: v.string(), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
+    const ownerTokenIdentifier = await anonymousOwnerKey(args.sessionToken);
     const repository = parseGitHubRepoUrl(args.repoUrl);
     const activeScans = await Promise.all(activeStatuses.map((status) =>
       ctx.db
@@ -54,21 +54,19 @@ export const createScan = mutation({
       .withIndex("by_owner_and_startedAt", (q) => q.eq("ownerTokenIdentifier", ownerTokenIdentifier).gte("startedAt", hourAgo))
       .order("desc")
       .take(SESSION_HOURLY_LIMIT + 1);
-    const globalScans = await ctx.db
-      .query("scans")
-      .withIndex("by_startedAt", (q) => q.gte("startedAt", hourAgo))
-      .order("desc")
-      .take(GLOBAL_HOURLY_LIMIT + 1);
+
     if (activeScan) {
       if (activeScan.repoUrl === repository.canonicalUrl) return activeScan._id;
       throw new Error("Finish the active scan before starting another repository.");
     }
     if (recentScans.length >= SESSION_HOURLY_LIMIT) throw new Error("This browser session has reached its hourly scan quota.");
-    if (globalScans.length >= GLOBAL_HOURLY_LIMIT) throw new Error("VoidGuard is at hourly capacity. Try again later.");
+
     return ctx.db.insert("scans", {
       ownerTokenIdentifier,
       repoUrl: repository.canonicalUrl,
       status: "initialized",
+      logCount: 0,
+      findingCount: 0,
       startedAt: Date.now(),
     });
   },
@@ -77,7 +75,7 @@ export const createScan = mutation({
 export const getScan = query({
   args: { scanId: v.id("scans"), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
+    const ownerTokenIdentifier = await anonymousOwnerKey(args.sessionToken);
     const scan = await ctx.db.get(args.scanId);
     return scan?.ownerTokenIdentifier === ownerTokenIdentifier ? exposeScan(scan) : null;
   },
@@ -86,7 +84,7 @@ export const getScan = query({
 export const listRecentScans = query({
   args: { sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
+    const ownerTokenIdentifier = await anonymousOwnerKey(args.sessionToken);
     const scans = await ctx.db
       .query("scans")
       .withIndex("by_owner_and_startedAt", (q) => q.eq("ownerTokenIdentifier", ownerTokenIdentifier))
@@ -99,7 +97,7 @@ export const listRecentScans = query({
 export const getScanLogs = query({
   args: { scanId: v.id("scans"), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
+    const ownerTokenIdentifier = await anonymousOwnerKey(args.sessionToken);
     const scan = await ctx.db.get(args.scanId);
     if (!scan || scan.ownerTokenIdentifier !== ownerTokenIdentifier) return [];
     return ctx.db.query("scanLogs").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).order("asc").take(250);
@@ -109,7 +107,7 @@ export const getScanLogs = query({
 export const getScanFindings = query({
   args: { scanId: v.id("scans"), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
+    const ownerTokenIdentifier = await anonymousOwnerKey(args.sessionToken);
     const scan = await ctx.db.get(args.scanId);
     if (!scan || scan.ownerTokenIdentifier !== ownerTokenIdentifier) return [];
     return ctx.db.query("findings").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).order("desc").take(100);
@@ -128,19 +126,30 @@ export const claimScanRun = internalMutation({
   args: { scanId: v.id("scans") },
   handler: async (ctx, args) => {
     const scan = await ctx.db.get(args.scanId);
-    if (!scan || ["completed", "failed"].includes(scan.status)) return false;
+    if (!scan || ["completed", "failed"].includes(scan.status)) return "busy" as const;
     const now = Date.now();
     const leaseStartedAt = scan.claimedAt ?? scan.startedAt;
-    if (scan.status !== "initialized" && now - leaseStartedAt < SCAN_LEASE_MS) return false;
+    if (scan.status !== "initialized" && now - leaseStartedAt < SCAN_LEASE_MS) return "busy" as const;
+    const recentClaims = await ctx.db
+      .query("scans")
+      .withIndex("by_claimedAt", (q) => q.gte("claimedAt", now - 60 * 60 * 1000))
+      .order("desc")
+      .take(GLOBAL_HOURLY_LIMIT + 1);
+    if (recentClaims.length >= GLOBAL_HOURLY_LIMIT) return "capacity" as const;
     if (scan.status !== "initialized") {
-      const [logs, findings] = await Promise.all([
-        ctx.db.query("scanLogs").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).take(250),
-        ctx.db.query("findings").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).take(100),
-      ]);
-      await Promise.all([...logs, ...findings].map((document) => ctx.db.delete(document._id)));
+      while (true) {
+        const logs = await ctx.db.query("scanLogs").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).take(250);
+        await Promise.all(logs.map((document) => ctx.db.delete(document._id)));
+        if (logs.length < 250) break;
+      }
+      while (true) {
+        const findings = await ctx.db.query("findings").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).take(100);
+        await Promise.all(findings.map((document) => ctx.db.delete(document._id)));
+        if (findings.length < 100) break;
+      }
     }
-    await ctx.db.patch(args.scanId, { status: "scanning_secrets", claimedAt: now, completedAt: undefined, errorMessage: undefined });
-    return true;
+    await ctx.db.patch(args.scanId, { status: "scanning_secrets", claimedAt: now, logCount: 0, findingCount: 0, completedAt: undefined, errorMessage: undefined });
+    return "claimed" as const;
   },
 });
 
@@ -188,7 +197,10 @@ export const updateScanStatus = internalMutation({
 export const appendScanLog = internalMutation({
   args: { scanId: v.id("scans"), agent, message: v.string(), level: logLevel },
   handler: async (ctx, args) => {
-    await ctx.db.insert("scanLogs", { ...args, message: args.message.slice(0, 4000) });
+    const scan = await ctx.db.get(args.scanId);
+    if (!scan || (scan.logCount ?? 0) >= 250) return null;
+    await ctx.db.patch(args.scanId, { logCount: (scan.logCount ?? 0) + 1 });
+    return ctx.db.insert("scanLogs", { ...args, message: args.message.slice(0, 4000) });
   },
 });
 
@@ -205,13 +217,18 @@ export const createFinding = internalMutation({
     remediationPatch: v.optional(v.string()),
     status: v.literal("open"),
   },
-  handler: async (ctx, args) => ctx.db.insert("findings", {
-    ...args,
-    description: args.description.slice(0, 4000),
-    evidence: args.evidence.slice(0, 8000),
-    citations: args.citations?.slice(0, 12),
-    remediationPatch: args.remediationPatch?.slice(0, 20_000),
-  }),
+  handler: async (ctx, args) => {
+    const scan = await ctx.db.get(args.scanId);
+    if (!scan || (scan.findingCount ?? 0) >= 100) return null;
+    await ctx.db.patch(args.scanId, { findingCount: (scan.findingCount ?? 0) + 1 });
+    return ctx.db.insert("findings", {
+      ...args,
+      description: args.description.slice(0, 4000),
+      evidence: args.evidence.slice(0, 8000),
+      citations: args.citations?.slice(0, 12),
+      remediationPatch: args.remediationPatch?.slice(0, 20_000),
+    });
+  },
 });
 
 export const attachPatchToFinding = internalMutation({
@@ -224,7 +241,7 @@ export const attachPatchToFinding = internalMutation({
 export const acceptRisk = mutation({
   args: { findingId: v.id("findings"), reason: v.string(), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
+    const ownerTokenIdentifier = await anonymousOwnerKey(args.sessionToken);
     const finding = await ctx.db.get(args.findingId);
     if (!finding) throw new Error("Finding not found.");
     const scan = await ctx.db.get(finding.scanId);

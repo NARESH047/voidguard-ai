@@ -43,7 +43,7 @@ export default function Home() {
           <a href="#workspace" className="primary-button px-5 py-3.5 text-sm"><Sparkles size={15} /> Start a public audit <ArrowDown size={14} /></a>
           <a href="#workflow" className="subtle-button px-5 py-3.5 text-sm">Review the safeguards</a>
         </div>
-        <div className="mt-12 flex flex-wrap justify-center gap-x-8 gap-y-3 text-xs text-[#62666d]"><span>Read-only GitHub access</span><span>40-file maximum</span><span>Source-bound citations</span><span>Human-controlled proposals</span></div>
+        <div className="mt-12 flex flex-wrap justify-center gap-x-8 gap-y-3 text-xs text-[#8a8f98]"><span>Read-only GitHub access</span><span>40-file maximum</span><span>Source-bound citations</span><span>Human-controlled proposals</span></div>
       </section>
 
       <section id="workflow" className="relative z-10 mx-auto w-full max-w-7xl px-5 pb-20 sm:px-8 lg:pb-28">
@@ -62,11 +62,11 @@ export default function Home() {
         <TerminalDashboard />
       </section>
 
-      <footer className="relative z-10 border-t border-white/[0.06] px-5 py-8 sm:px-8"><div className="mx-auto flex w-full max-w-7xl flex-col justify-between gap-3 text-xs text-[#62666d] sm:flex-row"><span>VOIDGUARD AI / PUBLIC SECURITY OPERATIONS</span><span>Evidence first. Human controlled.</span></div></footer>
+      <footer className="relative z-10 border-t border-white/[0.06] px-5 py-8 sm:px-8"><div className="mx-auto flex w-full max-w-7xl flex-col justify-between gap-3 text-xs text-[#8a8f98] sm:flex-row"><span>VOIDGUARD AI / PUBLIC SECURITY OPERATIONS</span><span>Evidence first. Human controlled.</span></div></footer>
     </main>
   );
 }
 
 function Step({ number, title, copy, icon }: { number: string; title: string; copy: string; icon: ReactNode }) {
-  return <article className="workflow-step"><div className="flex items-center justify-between text-[11px] text-[#62666d]"><span>{number}</span><span className="step-icon">{icon}</span></div><h3 className="mt-7 text-base font-medium text-[#f7f8f8]">{title}</h3><p className="mt-3 text-sm leading-6 text-[#8a8f98]">{copy}</p></article>;
+  return <article className="workflow-step"><div className="flex items-center justify-between text-[11px] text-[#8a8f98]"><span>{number}</span><span className="step-icon">{icon}</span></div><h3 className="mt-7 text-base font-medium text-[#f7f8f8]">{title}</h3><p className="mt-3 text-sm leading-6 text-[#8a8f98]">{copy}</p></article>;
 }

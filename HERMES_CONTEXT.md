@@ -14,11 +14,13 @@ VoidGuard AI is an open, no-login security operations workspace deployed as a st
 
 ## Public access model
 - No account or login is required.
-- Each browser tab receives a random UUID capability stored in `sessionStorage` when its first scan starts.
-- Scan documents never expose the stored capability owner key.
+- Each browser tab receives a random UUID capability stored in `sessionStorage`; it is restored after reload.
+- Scan documents store only a server-secret-derived digest of that capability and never return it to clients.
+- Starting expensive work requires a scan-bound SHA-256 proof-of-work challenge; global capacity is charged only when the audit is atomically claimed.
 - Each capability can have one active scan and five scans per rolling hour.
-- The deployment allows at most 30 new scans per rolling hour across all visitors.
+- The deployment allows at most 30 claimed audits per rolling hour across all visitors.
 - Private repositories are rejected. Visitors must make a repository public on GitHub before sharing its link.
+- Public eligibility is probed without the ambient GitHub token; only confirmed-public repositories may use the token for subsequent quota-efficient reads.
 
 ## Security invariants
 - Raw credential matches are never persisted or sent to model providers.
@@ -28,6 +30,7 @@ VoidGuard AI is an open, no-login security operations workspace deployed as a st
 - Generated patches require separate model QA plus deterministic one-dependency/one-version validation and remain review-only.
 - Provider failures make the scan fail rather than presenting partial work as complete.
 - Active scans use renewable leases; stale attempts restart cleanly and terminal states cannot be rewritten.
+- Scan output is capped at 250 logs and 100 findings; stale recovery deletes all prior artifacts in bounded pages.
 
 ## Verification
 ```bash

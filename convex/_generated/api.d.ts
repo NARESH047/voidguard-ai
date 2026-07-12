@@ -8,10 +8,8 @@
  * @module
  */
 
-import type * as auth from "../auth.js";
 import type * as github from "../github.js";
 import type * as grounding from "../grounding.js";
-import type * as http from "../http.js";
 import type * as lib_security from "../lib/security.js";
 import type * as lib_session from "../lib/session.js";
 import type * as mutations from "../mutations.js";
@@ -25,10 +23,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  auth: typeof auth;
   github: typeof github;
   grounding: typeof grounding;
-  http: typeof http;
   "lib/security": typeof lib_security;
   "lib/session": typeof lib_session;
   mutations: typeof mutations;
