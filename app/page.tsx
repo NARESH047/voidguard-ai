@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import {
   AlertTriangle,
   AudioLines,
@@ -31,13 +33,6 @@ type AgentCard = {
   icon: typeof Shield;
   tone: string;
   pulse: string;
-};
-
-type WaitlistPayload = {
-  email: string;
-  repositoryUrl: string;
-  source: "landing_page";
-  requestedAt: string;
 };
 
 const DEFAULT_REPO = "https://github.com/acme/dev-tool";
@@ -126,9 +121,11 @@ export default function Home() {
   const [isRunning, setIsRunning] = useState(false);
   const [showWaitlist, setShowWaitlist] = useState(false);
   const [email, setEmail] = useState("");
-  const [submitState, setSubmitState] = useState<"idle" | "submitting" | "success">("idle");
+  const [submitState, setSubmitState] = useState<"idle" | "submitting" | "success" | "error">("idle");
+  const [submitError, setSubmitError] = useState("");
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [activeMetric, setActiveMetric] = useState("Awaiting target acquisition");
+  const joinWaitlist = useMutation(api.waitlist.join);
 
   const playAlert = () => {
     if (!audioEnabled || typeof window === "undefined") return;
@@ -202,10 +199,12 @@ export default function Home() {
     setIsRunning(false);
   };
 
-  const submitWaitlist = async (payload: WaitlistPayload) => {
-    // Demo-only flow. Replace this with a Convex mutation when the schema is ready.
-    await wait(500);
-    return payload;
+  const submitWaitlist = async () => {
+    return joinWaitlist({
+      email,
+      repositoryUrl,
+      source: "landing_page",
+    });
   };
 
   const handleWaitlistSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -213,13 +212,14 @@ export default function Home() {
     if (!email || submitState === "submitting") return;
 
     setSubmitState("submitting");
-    await submitWaitlist({
-      email,
-      repositoryUrl,
-      source: "landing_page",
-      requestedAt: new Date().toISOString(),
-    });
-    setSubmitState("success");
+    setSubmitError("");
+    try {
+      await submitWaitlist();
+      setSubmitState("success");
+    } catch (error) {
+      setSubmitState("error");
+      setSubmitError(error instanceof Error ? error.message : "Unable to join the waitlist.");
+    }
   };
 
   const terminalToneClass = (tone: AuditStageTone) => {
@@ -502,6 +502,8 @@ export default function Home() {
                   ? "DECRYPTING ACCESS KEY..."
                   : submitState === "success"
                     ? "ACCESS GRANTED"
+                    : submitState === "error"
+                      ? "RETRY JOIN"
                     : "JOIN WAITLIST"}
               </button>
             </div>
@@ -509,16 +511,21 @@ export default function Home() {
             <div className="border-double border-4 border-[#124d29] bg-[#010501] p-4 text-sm leading-6 text-[#a8ffc8]">
               {submitState === "success" ? (
                 <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-[0.3em] text-[#ffaa00]">demo handshake complete</div>
+                  <div className="text-xs uppercase tracking-[0.3em] text-[#ffaa00]">queue handshake complete</div>
                   <p className="text-base text-[#ecffec]">
-                    ACCESS PREVIEW GRANTED. Agent {email}, your demo request was processed locally. No data was transmitted.
+                    ACCESS GRANTED. Agent {email}, your request is secured in the VoidGuard queue.
                   </p>
+                </div>
+              ) : submitState === "error" ? (
+                <div className="space-y-2 text-[#ffb0b0]">
+                  <div className="text-xs uppercase tracking-[0.3em] text-[#ff6b6b]">handshake failed</div>
+                  <p>{submitError}</p>
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-[0.3em] text-[#ffaa00]">Demo mode</div>
+                  <div className="text-xs uppercase tracking-[0.3em] text-[#ffaa00]">Convex queue online</div>
                   <p>
-                    The audit and handoff are simulated in the browser. Connect a Convex waitlist mutation when the production schema is ready.
+                    The audit is simulated in the browser. Waitlist submissions are validated and stored securely in Convex.
                   </p>
                 </div>
               )}
