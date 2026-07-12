@@ -1,23 +1,30 @@
-# Hermes Hackathon Workspace Blueprint
+# VoidGuard AI Workspace
 
-## 1. System Stack
-* **Frontend Architecture:** Next.js framework (App Router, Tailwind CSS layout, dark theme optimization).
-* **Database Runtime:** Convex Serverless Cloud Architecture (Reactive data streams, real-time client mutations).
-* **Routing Pipeline:** Cloudflare AI Gateway proxy infrastructure ("hermes-build") handling request mapping.
-* **Core Inference Brain:** Nous Research Hermes 3 405B model parameters (routed via OpenRouter API hooks).
+## Product
+VoidGuard AI is an authenticated security operations workspace deployed as a static Next.js frontend on Cloudflare Pages with a Convex backend. It performs bounded, read-only GitHub repository acquisition, local secret-pattern detection with evidence redaction, OpenAI web-grounded dependency analysis, remediation generation, independent QA verification, and auditable risk acceptance.
 
----
+## Core architecture
+- `app/page.tsx` — focused marketing shell and authenticated workspace entry.
+- `src/components/AuthDialog.tsx` — Convex Auth email/password signup and login.
+- `src/components/TerminalDashboard.tsx` — real-time scan history, agent logs, findings, citations, patches, and risk decisions.
+- `convex/schema.ts` — auth, waitlist, scans, scan logs, findings, and risk-register tables.
+- `convex/mutations.ts` — authorized scan/read/write functions and internal orchestration mutations.
+- `convex/security_lead.ts` — bounded multi-agent orchestration action.
+- `convex/github.ts` — bounded GitHub API repository acquisition.
+- `convex/grounding.ts` — OpenAI Responses API web-search grounding with authoritative-domain validation.
+- `convex/lib/security.ts` — repository URL validation, dependency extraction, and redacted secret detection.
 
-## 2. Code Map
-* `components/Provider.tsx` — Connects the Next.js application layer to the Convex backend context.
-* `app/layout.tsx` — Top-level styling wrapper provisioning the global database state provider.
-* `convex/ai.ts` — Serverless execution file housing the infrastructure validation check, real-time logging mutations, and a three-tier Multi-Agent pipeline (Web Search Tool Integration -> Hermes Writer Agent -> Hermes Critic Agent).
-* `convex/projects.ts` — Data operations file mapping campaign session creation records and streaming live agent logs reactively by descending order.
-* `app/page.tsx` — Interactive command panel frontend dashboard streaming database operation updates natively to the browser view via reactive server hooks.
+## Security invariants
+- Secrets and provider credentials live only in Convex environment variables.
+- Raw credential matches are never written to Convex or sent to model providers.
+- Scan, log, finding, and risk-register access is checked against the authenticated identity.
+- Repository acquisition is bounded by file count, file size, repository size, and extension allowlists.
+- Dependency findings require exact-version output and authoritative HTTPS citations.
+- Generated patches require a separate QA verdict and remain review-only.
+- Production environment values must never be copied into repository files.
 
----
-
-## 3. Non-Sensitive Notes
-* **Variable Safety:** All routing keys, API connection endpoints, and provider tokens are locked inside the isolated Convex online dashboard environment vault. No plaintext access codes, secret tokens, or raw credentials exist anywhere inside local repository workspace files.
-* **TypeScript Settings:** The workspace includes an explicit global environmental injection layout block (`declare var process`) ensuring compiler compatibility inside cloud edge runtime boundaries.
-* **Pipeline Status:** Verified green across all metrics. The core integration diagnostic, endpoint proxy connection parameters, and terminal agent auto-execution overrides are completely operational.
+## Verification
+- `npm test`
+- `npm run lint`
+- `npm run typecheck`
+- `npm run build`

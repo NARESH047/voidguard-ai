@@ -61,6 +61,7 @@ export default defineSchema({
     description: v.string(),
     evidence: v.string(),
     cveId: v.optional(v.string()),
+    citations: v.optional(v.array(v.object({ title: v.string(), url: v.string() }))),
     remediationPatch: v.optional(v.string()),
     status: v.union(v.literal("open"), v.literal("remediated"), v.literal("accepted_risk")),
   }).index("by_scan", ["scanId"]),

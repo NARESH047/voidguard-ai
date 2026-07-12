@@ -1,33 +1,165 @@
-type LinkupResponse = {
-  sourcedAnswer?: string;
-  answer?: string;
-  sources?: Array<{ name?: string; url?: string; snippet?: string }>;
+import OpenAI from "openai";
+
+export type GroundedCitation = { title: string; url: string };
+export type GroundedVulnerability = {
+  packageName: string;
+  version: string;
+  affected: boolean;
+  severity: "NONE" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  cveIds: string[];
+  summary: string;
+  fixedVersions: string[];
+  citations: GroundedCitation[];
+  confidence: number;
 };
 
-function getApiKey() {
-  const apiKey = process.env.LINKUP_API_KEY;
-  if (!apiKey) throw new Error("LINKUP_API_KEY is not configured.");
-  return apiKey;
+const AUTHORITATIVE_DOMAINS = ["nvd.nist.gov", "github.com", "osv.dev", "npmjs.com"];
+
+export function buildGroundingQuery(packageName: string, version: string) {
+  return [
+    `Determine whether the exact version ${packageName}@${version} is affected by a published security advisory.`,
+    "Use authoritative sources only: NVD, GitHub Advisory Database, OSV, or the package maintainer registry.",
+    "Do not treat a vulnerability in a different version range as affecting the exact version.",
+    "Return an unaffected result when authoritative evidence is absent or ambiguous.",
+  ].join(" ");
 }
 
-export async function lookupDependencyVulnerabilities(packageName: string, version: string) {
-  const query = `Check ${packageName}@${version} for active CVEs or security advisories. Prefer official NVD, GitHub Advisory Database, and package-maintainer sources.`;
-  const response = await fetch("https://api.linkup.so/v1/search", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${getApiKey()}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query, depth: "standard", outputType: "sourcedAnswer" }),
-  });
+function assertStringArray(value: unknown, field: string) {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new Error(`Grounding output field ${field} must be an array of strings.`);
+  }
+  return value as string[];
+}
 
-  if (!response.ok) throw new Error(`Linkup request failed with HTTP ${response.status}.`);
-  const result = (await response.json()) as LinkupResponse;
-  const rawContext = result.sourcedAnswer ?? result.answer ?? "";
-  const lower = rawContext.toLowerCase();
+function isAuthoritativeUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:") return false;
+    if (url.hostname === "github.com") {
+      return url.pathname.startsWith("/advisories/") || url.pathname.includes("/security/advisories/");
+    }
+    return AUTHORITATIVE_DOMAINS.filter((domain) => domain !== "github.com")
+      .some((domain) => url.hostname === domain || url.hostname.endsWith(`.${domain}`));
+  } catch {
+    return false;
+  }
+}
+
+export function parseGroundingOutput(raw: string, packageName: string, version: string): GroundedVulnerability {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error("Grounding model did not return valid JSON.");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Grounding model returned an invalid object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.packageName !== packageName || record.version !== version) {
+    throw new Error("Grounding result did not match the requested package and version.");
+  }
+  if (typeof record.affected !== "boolean" || typeof record.summary !== "string") {
+    throw new Error("Grounding result is missing required fields.");
+  }
+  const severities = ["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
+  if (!severities.includes(record.severity as (typeof severities)[number])) {
+    throw new Error("Grounding result has an invalid severity.");
+  }
+  if (record.affected && record.severity === "NONE") {
+    throw new Error("Affected claims cannot use NONE severity.");
+  }
+  const confidence = record.confidence;
+  if (typeof confidence !== "number" || confidence < 0 || confidence > 1) {
+    throw new Error("Grounding result confidence must be between 0 and 1.");
+  }
+  if (!Array.isArray(record.citations)) throw new Error("Grounding result citations must be an array.");
+  const citations = record.citations.map((citation) => {
+    if (!citation || typeof citation !== "object" || Array.isArray(citation)) {
+      throw new Error("Grounding result contains an invalid citation.");
+    }
+    const item = citation as Record<string, unknown>;
+    if (typeof item.title !== "string" || typeof item.url !== "string") {
+      throw new Error("Grounding result contains an invalid citation.");
+    }
+    return { title: item.title, url: item.url };
+  });
+  if (record.affected && !citations.some((citation) => isAuthoritativeUrl(citation.url))) {
+    throw new Error("Affected claims require at least one authoritative citation.");
+  }
   return {
-    hasVulnerabilities: /cve-\d{4}-\d{4,}|security advisory|vulnerable|exploit/.test(lower),
-    rawContext,
-    sources: result.sources ?? [],
+    packageName,
+    version,
+    affected: record.affected,
+    severity: record.severity as GroundedVulnerability["severity"],
+    cveIds: assertStringArray(record.cveIds, "cveIds").filter((id) => /^CVE-\d{4}-\d{4,}$/i.test(id)),
+    summary: record.summary.slice(0, 4000),
+    fixedVersions: assertStringArray(record.fixedVersions, "fixedVersions").slice(0, 20),
+    citations: citations.slice(0, 12),
+    confidence,
   };
+}
+
+export function createOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY is not configured.");
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const gatewayId = process.env.CLOUDFLARE_GATEWAY_ID;
+  const gatewayToken = process.env.CLOUDFLARE_API_TOKEN;
+  return new OpenAI({
+    apiKey,
+    baseURL: accountId && gatewayId ? `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/openai` : undefined,
+    defaultHeaders: gatewayToken ? { "cf-aig-authorization": `Bearer ${gatewayToken}` } : undefined,
+    timeout: 30_000,
+    maxRetries: 2,
+  });
+}
+
+const groundingSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["packageName", "version", "affected", "severity", "cveIds", "summary", "fixedVersions", "citations", "confidence"],
+  properties: {
+    packageName: { type: "string" },
+    version: { type: "string" },
+    affected: { type: "boolean" },
+    severity: { type: "string", enum: ["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+    cveIds: { type: "array", items: { type: "string" } },
+    summary: { type: "string" },
+    fixedVersions: { type: "array", items: { type: "string" } },
+    citations: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "url"],
+        properties: { title: { type: "string" }, url: { type: "string" } },
+      },
+    },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+  },
+} as const;
+
+export async function lookupDependencyVulnerabilities(packageName: string, version: string) {
+  const client = createOpenAIClient();
+  const model = process.env.VOIDGUARD_GROUNDING_MODEL ?? "gpt-5.2";
+  const response = await client.responses.create({
+    model,
+    input: buildGroundingQuery(packageName, version),
+    tools: [{
+      type: "web_search",
+      search_context_size: "low",
+      filters: { allowed_domains: AUTHORITATIVE_DOMAINS },
+    }],
+    include: ["web_search_call.action.sources"],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "dependency_vulnerability",
+        strict: true,
+        schema: groundingSchema,
+      },
+    },
+  });
+  return parseGroundingOutput(response.output_text, packageName, version);
 }

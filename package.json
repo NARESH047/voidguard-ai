@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "serve out",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@auth/core": "^0.41.2",
@@ -19,14 +21,18 @@
     "react-dom": "19.2.4"
   },
   "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20.19.43",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "convex-test": "^0.0.54",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "serve": "^14.2.6",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
   }
 }

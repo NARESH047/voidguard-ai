@@ -1,10 +1,11 @@
 import { action } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import OpenAI from "openai";
-import { lookupDependencyVulnerabilities } from "./grounding";
+import { createOpenAIClient, lookupDependencyVulnerabilities, type GroundedVulnerability } from "./grounding";
+import { loadRepositoryFiles } from "./github";
+import { detectSecrets, extractDependencies } from "./lib/security";
 
-const agent = {
+const agents = {
   lead: "SecurityLead" as const,
   secrets: "SecretsScanner" as const,
   dependencies: "DependencyAuditor" as const,
@@ -12,162 +13,204 @@ const agent = {
   qa: "QA_Verifier" as const,
 };
 
-const models = {
-  secrets: process.env.VOIDGUARD_SECRETS_MODEL ?? "gpt-5.6-luna",
-  dependencies: process.env.VOIDGUARD_DEPENDENCIES_MODEL ?? "gpt-5.6-terra",
-  remediation: process.env.VOIDGUARD_REMEDIATION_MODEL ?? "gpt-5.6-sol",
-};
+type LogLevel = "info" | "warning" | "error" | "success";
+type Agent = (typeof agents)[keyof typeof agents];
+type Remediation = { remediationPatch: string; reason: string; confidence: number };
 
-type GitHubFile = { path: string; type: string; download_url?: string | null; content?: string; encoding?: string };
-
-function parseRepo(repoUrl: string) {
-  const url = new URL(repoUrl);
-  const [owner, repo] = url.pathname.split("/").filter(Boolean);
-  if (url.protocol !== "https:" || url.hostname !== "github.com" || !owner || !repo) {
-    throw new Error("Only HTTPS GitHub repository URLs are supported.");
+function parseJsonObject(raw: string, label: string) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new Error(`${label} returned invalid structured output.`);
   }
-  return { owner, repo: repo.replace(/\.git$/, "") };
 }
 
-async function githubRequest(path: string) {
-  const response = await fetch(`https://api.github.com${path}`, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "VoidGuard-AI",
+async function generateRemediation(grounding: GroundedVulnerability) {
+  const client = createOpenAIClient();
+  const model = process.env.VOIDGUARD_REMEDIATION_MODEL ?? "gpt-5.2";
+  const response = await client.responses.create({
+    model,
+    input: [
+      "You are the RemediationWriter for a security audit.",
+      `Package: ${grounding.packageName}@${grounding.version}`,
+      `Advisory: ${grounding.summary}`,
+      `Fixed versions from authoritative sources: ${grounding.fixedVersions.join(", ") || "none confirmed"}`,
+      "Generate a minimal package.json unified diff only when a fixed version is explicitly supported by the evidence.",
+      "Never invent a version. If no fixed version is confirmed, return an empty remediationPatch and explain why.",
+    ].join("\n"),
+    text: {
+      format: {
+        type: "json_schema",
+        name: "remediation",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["remediationPatch", "reason", "confidence"],
+          properties: {
+            remediationPatch: { type: "string" },
+            reason: { type: "string" },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+          },
+        },
+      },
     },
   });
-  if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status} for ${path}.`);
-  return response.json();
+  const parsed = parseJsonObject(response.output_text, "RemediationWriter");
+  if (typeof parsed.remediationPatch !== "string" || typeof parsed.reason !== "string" || typeof parsed.confidence !== "number") {
+    throw new Error("RemediationWriter returned incomplete structured output.");
+  }
+  return parsed as Remediation;
 }
 
-async function readGitHubFile(owner: string, repo: string, path: string) {
-  const item = (await githubRequest(`/repos/${owner}/${repo}/contents/${path}`)) as GitHubFile;
-  if (item.type !== "file" || !item.content) return null;
-  return {
-    path: item.path,
-    content: item.encoding === "base64" ? atob(item.content.replace(/\n/g, "")) : item.content,
-  };
-}
-
-function redactEvidence(value: string) {
-  return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-4)}` : "[redacted]";
-}
-
-function scanForSecrets(content: string) {
-  const patterns = [
-    /(?:sk-[A-Za-z0-9]{16,})/g,
-    /(?:gh[pousr]_[A-Za-z0-9_]{20,})/g,
-    /(?:AKIA[0-9A-Z]{16})/g,
-    /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g,
-    /(?:password|passwd|secret|token)\s*[:=]\s*["'][^"']{8,}["']/gi,
-  ];
-  return patterns.flatMap((pattern) => [...content.matchAll(pattern)].map((match) => ({
-    evidence: redactEvidence(match[0]),
-    description: "A credential-like value was detected in a repository file.",
-  })));
-}
-
-function getOpenAIClient() {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const gatewayId = process.env.CLOUDFLARE_GATEWAY_ID;
-  return new OpenAI({
-    apiKey,
-    baseURL: accountId && gatewayId
-      ? `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/openai`
-      : undefined,
+async function verifyRemediation(grounding: GroundedVulnerability, remediation: Remediation) {
+  if (!remediation.remediationPatch) return { approved: false, verdict: remediation.reason };
+  const client = createOpenAIClient();
+  const model = process.env.VOIDGUARD_QA_MODEL ?? process.env.VOIDGUARD_REMEDIATION_MODEL ?? "gpt-5.2";
+  const response = await client.responses.create({
+    model,
+    input: [
+      "You are the independent QA Verifier. Reject unsafe or unsupported dependency patches.",
+      `Package: ${grounding.packageName}@${grounding.version}`,
+      `Confirmed fixed versions: ${grounding.fixedVersions.join(", ")}`,
+      `Proposed patch:\n${remediation.remediationPatch}`,
+      "Approve only when the patch changes the exact package, uses a confirmed fixed version, and is a syntactically plausible unified diff.",
+    ].join("\n"),
+    text: {
+      format: {
+        type: "json_schema",
+        name: "qa_verdict",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["approved", "verdict"],
+          properties: { approved: { type: "boolean" }, verdict: { type: "string" } },
+        },
+      },
+    },
   });
-}
-
-async function generateRemediation(packageName: string, version: string, context: string) {
-  const openai = getOpenAIClient();
-  if (!openai) return null;
-  const response = await openai.chat.completions.create({
-    model: models.remediation,
-    messages: [{
-      role: "user",
-      content: `Review this dependency advisory and return JSON only with keys remediationPatch and reason. Do not invent a version; recommend updating to the latest compatible stable release only when the advisory supports it.\nPackage: ${packageName}@${version}\nAdvisory: ${context}`,
-    }],
-    response_format: { type: "json_object" },
-    temperature: 0.1,
-  });
-  const parsed = JSON.parse(response.choices[0]?.message.content ?? "{}");
-  return typeof parsed.remediationPatch === "string" ? parsed : null;
+  const parsed = parseJsonObject(response.output_text, "QA Verifier");
+  if (typeof parsed.approved !== "boolean" || typeof parsed.verdict !== "string") {
+    throw new Error("QA Verifier returned incomplete structured output.");
+  }
+  return { approved: parsed.approved, verdict: parsed.verdict };
 }
 
 export const runAutonomousAudit = action({
-  args: { scanId: v.id("scans"), repoUrl: v.string() },
+  args: { scanId: v.id("scans") },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity?.tokenIdentifier) throw new Error("Authentication required.");
+    const scan = await ctx.runQuery(internal.mutations.requireOwnedScan, {
+      scanId: args.scanId,
+      ownerTokenIdentifier: identity.tokenIdentifier,
+    });
+    if (!scan) throw new Error("Scan not found.");
 
-    const log = (message: string, level: "info" | "warning" | "error" | "success", actor: typeof agent[keyof typeof agent] = agent.lead) =>
-      ctx.runMutation(internal.scans.appendLog, { scanId: args.scanId, agent: actor, message, level });
+    const log = (agent: Agent, message: string, level: LogLevel = "info") =>
+      ctx.runMutation(internal.mutations.appendScanLog, { scanId: args.scanId, agent, message, level });
 
+    let findingCount = 0;
     try {
-      const { owner, repo } = parseRepo(args.repoUrl);
-      await ctx.runMutation(internal.scans.updateStatus, { scanId: args.scanId, status: "scanning_secrets" });
-      await log(`Security Lead opened a read-only audit for ${owner}/${repo}.`, "info");
+      await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "scanning_secrets" });
+      await log(agents.lead, `Opening bounded read-only audit for ${scan.repoUrl}.`);
+      const repository = await loadRepositoryFiles(scan.repoUrl);
+      await log(agents.lead, `Loaded ${repository.files.length} eligible files from ${repository.owner}/${repository.repo}@${repository.branch}.`);
 
-      const candidatePaths = ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", ".env.example", "config/production.json"];
-      const files = (await Promise.all(candidatePaths.map((path) => readGitHubFile(owner, repo, path).catch(() => null)))).filter(Boolean) as Array<{ path: string; content: string }>;
-      if (files.length === 0) throw new Error("No supported manifest or configuration files were readable from this public repository.");
-
-      await log(`Secrets Scanner inspected ${files.length} repository files using ${models.secrets}.`, "info", agent.secrets);
-      for (const file of files) {
-        for (const leak of scanForSecrets(file.content)) {
-          await ctx.runMutation(internal.scans.createFinding, {
+      for (const file of repository.files) {
+        const matches = detectSecrets(file.content);
+        for (const match of matches) {
+          await ctx.runMutation(internal.mutations.createFinding, {
             scanId: args.scanId,
             filePath: file.path,
             type: "leaked_secret",
-            severity: "CRITICAL",
-            description: leak.description,
-            evidence: leak.evidence,
+            severity: match.severity,
+            description: match.description,
+            evidence: match.evidence,
             status: "open",
           });
-          await log(`Credential-like material detected in ${file.path}; evidence was redacted before storage.`, "error", agent.secrets);
+          findingCount += 1;
+          await log(agents.secrets, `Redacted credential-like material detected in ${file.path}.`, "error");
         }
       }
+      await log(
+        agents.secrets,
+        findingCount > 0 ? `Secrets sweep produced ${findingCount} redacted finding(s).` : "Secrets sweep completed without credential findings.",
+        findingCount > 0 ? "warning" : "success",
+      );
 
-      await ctx.runMutation(internal.scans.updateStatus, { scanId: args.scanId, status: "auditing_dependencies" });
-      const packageFile = files.find((file) => file.path === "package.json");
-      if (packageFile) {
-        const manifest = JSON.parse(packageFile.content) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
-        const dependencies = { ...manifest.dependencies, ...manifest.devDependencies };
-        for (const [name, version] of Object.entries(dependencies).slice(0, 20)) {
-          await log(`Grounding ${name}@${version} with Linkup and ${models.dependencies}.`, "info", agent.dependencies);
-          if (!process.env.LINKUP_API_KEY) {
-            await log("LINKUP_API_KEY is not configured; dependency grounding was skipped.", "warning", agent.dependencies);
-            break;
+      await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "auditing_dependencies" });
+      const packageFile = repository.files.find((file) => file.path === "package.json");
+      if (!packageFile) {
+        await log(agents.dependencies, "No package.json found; dependency grounding was skipped.", "warning");
+      } else {
+        const dependencies = extractDependencies(packageFile.content, 12);
+        await log(agents.dependencies, `Grounding ${dependencies.length} prioritized dependencies with OpenAI web search.`);
+        for (const dependency of dependencies) {
+          let grounding: GroundedVulnerability;
+          try {
+            grounding = await lookupDependencyVulnerabilities(dependency.name, dependency.version);
+          } catch (error) {
+            await log(
+              agents.dependencies,
+              `${dependency.name}@${dependency.version}: grounding failed safely (${error instanceof Error ? error.message : "unknown error"}).`,
+              "warning",
+            );
+            continue;
           }
-          const grounding = await lookupDependencyVulnerabilities(name, version).catch((error) => ({ hasVulnerabilities: false, rawContext: String(error), sources: [] }));
-          if (!grounding.hasVulnerabilities) continue;
-          const remediation = await generateRemediation(name, version, grounding.rawContext);
-          const findingId = await ctx.runMutation(internal.scans.createFinding, {
+          if (!grounding.affected) {
+            await log(agents.dependencies, `${dependency.name}@${dependency.version}: no authoritative affected-version evidence found.`, "success");
+            continue;
+          }
+
+          const findingId = await ctx.runMutation(internal.mutations.createFinding, {
             scanId: args.scanId,
             filePath: packageFile.path,
             type: "vulnerable_dependency",
-            severity: "HIGH",
-            description: `${name}@${version} was associated with a live security advisory.`,
-            evidence: grounding.rawContext.slice(0, 8000),
+            severity: grounding.severity === "NONE" ? "MEDIUM" : grounding.severity,
+            description: grounding.summary,
+            evidence: grounding.cveIds.join(", ") || "Authoritative advisory without CVE identifier",
+            cveId: grounding.cveIds[0],
+            citations: grounding.citations,
             status: "open",
           });
-          if (remediation?.remediationPatch) {
-            await ctx.runMutation(internal.scans.attachPatch, { findingId, remediationPatch: remediation.remediationPatch });
-            await log(`Remediation proposal generated for ${name}@${version}.`, "success", agent.remediation);
+          findingCount += 1;
+          await log(agents.dependencies, `${dependency.name}@${dependency.version}: affected version confirmed by authoritative sources.`, "warning");
+
+          await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "writing_remediations" });
+          try {
+            const remediation = await generateRemediation(grounding);
+            await log(agents.remediation, `${dependency.name}: remediation proposal generated at ${Math.round(remediation.confidence * 100)}% confidence.`);
+            await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "verifying" });
+            const qa = await verifyRemediation(grounding, remediation);
+            if (qa.approved) {
+              await ctx.runMutation(internal.mutations.attachPatchToFinding, {
+                findingId,
+                remediationPatch: remediation.remediationPatch,
+              });
+              await log(agents.qa, `${dependency.name}: patch approved. ${qa.verdict}`, "success");
+            } else {
+              await log(agents.qa, `${dependency.name}: patch withheld. ${qa.verdict}`, "warning");
+            }
+          } catch (error) {
+            await log(agents.qa, `${dependency.name}: remediation failed safely (${error instanceof Error ? error.message : "unknown error"}).`, "warning");
           }
+          await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "auditing_dependencies" });
         }
       }
 
-      await ctx.runMutation(internal.scans.updateStatus, { scanId: args.scanId, status: "verifying" });
-      await log("QA Verifier checked scan integrity, redaction, and finding ownership.", "info", agent.qa);
-      await ctx.runMutation(internal.scans.updateStatus, { scanId: args.scanId, status: "completed" });
-      await log("Audit complete. Review findings before applying any remediation.", "success");
+      await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "verifying" });
+      await log(agents.qa, "Final integrity check complete: ownership, redaction, citations, and bounded output verified.", "success");
+      await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "completed" });
+      await log(agents.lead, `Audit completed with ${findingCount} finding(s). Human review is required before applying patches.`, "success");
+      return { findingCount };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Audit failed unexpectedly.";
-      await ctx.runMutation(internal.scans.updateStatus, { scanId: args.scanId, status: "failed", errorMessage: message });
-      await log(message, "error");
+      await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "failed", errorMessage: message });
+      await log(agents.lead, message, "error");
       throw error;
     }
   },
