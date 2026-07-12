@@ -1,591 +1,194 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
-import { useMutation } from "convex/react";
+import { FormEvent, useMemo, useState, type ReactNode } from "react";
+import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import {
+  Activity,
   AlertTriangle,
-  AudioLines,
-  Bot,
-  Bug,
+  ArrowUpRight,
   CheckCircle2,
-  ChevronRight,
+  CircleDotDashed,
   GitBranch,
   LockKeyhole,
-  Radio,
-  Shield,
-  Sparkles,
+  LogIn,
+  ScanLine,
+  ShieldCheck,
   Terminal,
-  Wrench,
+  UserPlus,
+  X,
   Zap,
 } from "lucide-react";
 
-type AuditStageTone = "normal" | "warning" | "critical" | "success";
-type AuditStage = {
-  label: string;
-  tone: AuditStageTone;
-};
-
-type AgentCard = {
-  name: string;
-  role: string;
-  detail: string;
-  icon: typeof Shield;
-  tone: string;
-  pulse: string;
-};
-
 const DEFAULT_REPO = "https://github.com/acme/dev-tool";
 
-const AUDIT_STAGES: AuditStage[] = [
-  {
-    label: "Initializing Agent Crew: Security Lead spawned...",
-    tone: "normal",
-  },
-  {
-    label: "Scanning directory tree for high-entropy secrets...",
-    tone: "normal",
-  },
-  {
-    label: "Analyzing lockfiles. Querying Linkup live CVE database...",
-    tone: "warning",
-  },
-  {
-    label: "WARNING: Leaked OpenAI Secret Key detected in config/production.json!",
-    tone: "critical",
-  },
-  {
-    label: "VULNERABILITY DETECTED: CVE-2025-XXXX (Critical RCE) found in lodash@4.17.20",
-    tone: "critical",
-  },
-  {
-    label: "Remediation Specialist generating git patch...",
-    tone: "warning",
-  },
-  {
-    label: "QA Verifier validating compilation and build integrity... PASS.",
-    tone: "success",
-  },
-  {
-    label: "Autonomous Fix PR compiled and ready to merge.",
-    tone: "success",
-  },
-];
+type AuthMode = "signup" | "login";
+type AuthState = "idle" | "working" | "error";
 
-const AGENT_CREW: AgentCard[] = [
-  {
-    name: "Secrets Specialist",
-    role: "Entropy Hunter",
-    detail: "Tracks leaked API keys, exposed vault material, and poisoned configs before they hit production.",
-    icon: LockKeyhole,
-    tone: "text-[#ff3333]",
-    pulse: "shadow-[0_0_18px_rgba(255,51,51,0.4)]",
-  },
-  {
-    name: "Dependency Auditor",
-    role: "Live CVE Recon",
-    detail: "Diffs lockfiles, correlates package drift, and queries live exploit intel through Linkup.",
-    icon: Bug,
-    tone: "text-[#ffaa00]",
-    pulse: "shadow-[0_0_18px_rgba(255,170,0,0.4)]",
-  },
-  {
-    name: "Patch Writer",
-    role: "Auto-Remediator",
-    detail: "Builds deterministic patches, rewrites insecure flows, and stages hardened pull requests.",
-    icon: Wrench,
-    tone: "text-[#00ff66]",
-    pulse: "shadow-[0_0_18px_rgba(0,255,102,0.4)]",
-  },
-  {
-    name: "QA Verifier",
-    role: "Integrity Sentinel",
-    detail: "Rebuilds the target repo, validates tests, and confirms the secure patch still ships cleanly.",
-    icon: CheckCircle2,
-    tone: "text-[#00ff66]",
-    pulse: "shadow-[0_0_18px_rgba(0,255,102,0.35)]",
-  },
-];
-
-const BADGES = [
-  "SECURED VIA LINKUP API",
-  "REALTIME REACTIVE BACKEND ON CONVEX",
-  "DEPLOYED ON CLOUDFLARE EDGE",
-];
-
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const statusCopy: Record<string, string> = {
+  initialized: "Queued",
+  scanning_secrets: "Secrets sweep",
+  auditing_dependencies: "Dependency recon",
+  writing_remediations: "Writing remediation",
+  verifying: "Verifying",
+  completed: "Complete",
+  failed: "Failed",
+};
 
 export default function Home() {
-  const [repositoryUrl, setRepositoryUrl] = useState(DEFAULT_REPO);
-  const [auditLog, setAuditLog] = useState<{ text: string; tone: AuditStageTone }[]>([]);
+  const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
+  const { signIn, signOut } = useAuthActions();
+  const createScan = useMutation(api.scans.createScan);
+  const runAudit = useAction(api.security_lead.runAutonomousAudit);
+
+  const [repoUrl, setRepoUrl] = useState(DEFAULT_REPO);
+  const [activeScanId, setActiveScanId] = useState<Id<"scans"> | null>(null);
   const [isRunning, setIsRunning] = useState(false);
-  const [showWaitlist, setShowWaitlist] = useState(false);
+  const [authMode, setAuthMode] = useState<AuthMode | null>(null);
   const [email, setEmail] = useState("");
-  const [submitState, setSubmitState] = useState<"idle" | "submitting" | "success" | "error">("idle");
-  const [submitError, setSubmitError] = useState("");
-  const [audioEnabled, setAudioEnabled] = useState(false);
-  const [activeMetric, setActiveMetric] = useState("Awaiting target acquisition");
-  const joinWaitlist = useMutation(api.waitlist.join);
+  const [password, setPassword] = useState("");
+  const [authState, setAuthState] = useState<AuthState>("idle");
+  const [authError, setAuthError] = useState("");
+  const [auditError, setAuditError] = useState("");
 
-  const playAlert = () => {
-    if (!audioEnabled || typeof window === "undefined") return;
+  const scan = useQuery(api.scans.getScan, activeScanId ? { scanId: activeScanId } : "skip");
+  const logs = useQuery(api.scans.getScanLogs, activeScanId ? { scanId: activeScanId } : "skip");
+  const findings = useQuery(api.scans.getFindings, activeScanId ? { scanId: activeScanId } : "skip");
 
-    const AudioContextClass =
-      window.AudioContext ||
-      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextClass) return;
-
-    const context = new AudioContextClass();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.frequency.value = 660;
-    gain.gain.setValueAtTime(0.04, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.18);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start();
-    oscillator.stop(context.currentTime + 0.18);
-  };
-
-  const repoPreview = useMemo(() => {
-    if (!repositoryUrl.trim()) {
-      return "github.com/your-org/critical-repo";
-    }
-
-    return repositoryUrl.replace(/^https?:\/\//, "");
-  }, [repositoryUrl]);
-
-  const streamStage = async (label: string, tone: AuditStageTone) => {
-    setAuditLog((current) => [...current, { text: "", tone }]);
-
-    for (let i = 0; i < label.length; i += 1) {
-      await wait(tone === "critical" ? 14 : 11);
-      setAuditLog((current) => {
-        const next = [...current];
-        const last = next[next.length - 1];
-        if (!last) return current;
-        next[next.length - 1] = {
-          ...last,
-          text: label.slice(0, i + 1),
-        };
-        return next;
-      });
-    }
-  };
-
-  const handleRunAudit = async () => {
-    if (isRunning) return;
-
-    setIsRunning(true);
-    setSubmitState("idle");
-    setShowWaitlist(false);
-    setAuditLog([
-      {
-        text: `Target locked: ${repoPreview}`,
-        tone: "normal",
-      },
-    ]);
-    setActiveMetric("Spawning autonomous crew");
-
-    for (const [index, stage] of AUDIT_STAGES.entries()) {
-      setActiveMetric(stage.label.replace(/\.\.\.$/, ""));
-      await wait(index === 0 ? 500 : 320);
-      if (stage.tone === "critical") playAlert();
-      await streamStage(stage.label, stage.tone);
-    }
-
-    setActiveMetric("Fix PR staged for operator approval");
-    setShowWaitlist(true);
-    setIsRunning(false);
-  };
-
-  const submitWaitlist = async () => {
-    return joinWaitlist({
-      email,
-      repositoryUrl,
-      source: "landing_page",
-    });
-  };
-
-  const handleWaitlistSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!email || submitState === "submitting") return;
-
-    setSubmitState("submitting");
-    setSubmitError("");
+  const repoLabel = useMemo(() => {
     try {
-      await submitWaitlist();
-      setSubmitState("success");
+      const url = new URL(repoUrl);
+      return `${url.hostname}${url.pathname.replace(/\/$/, "")}`;
+    } catch {
+      return repoUrl || "github.com/owner/repository";
+    }
+  }, [repoUrl]);
+
+  const openAuth = (mode: AuthMode) => {
+    setAuthMode(mode);
+    setAuthState("idle");
+    setAuthError("");
+  };
+
+  const handleAuth = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!authMode || authState === "working") return;
+    setAuthState("working");
+    setAuthError("");
+    try {
+      await signIn("password", { flow: authMode === "signup" ? "signUp" : "signIn", email, password });
+      setAuthMode(null);
+      setPassword("");
     } catch (error) {
-      setSubmitState("error");
-      setSubmitError(error instanceof Error ? error.message : "Unable to join the waitlist.");
+      setAuthState("error");
+      setAuthError(error instanceof Error ? error.message : "Authentication failed. Check your details and try again.");
     }
   };
 
-  const terminalToneClass = (tone: AuditStageTone) => {
-    if (tone === "critical") return "text-[#ff3333]";
-    if (tone === "warning") return "text-[#ffaa00]";
-    if (tone === "success") return "text-[#00ff66]";
-    return "text-[#7dffaf]";
+  const startAudit = async () => {
+    if (!isAuthenticated) {
+      openAuth("signup");
+      return;
+    }
+    if (isRunning) return;
+    setIsRunning(true);
+    setAuditError("");
+    try {
+      const scanId = await createScan({ repoUrl });
+      setActiveScanId(scanId);
+      await runAudit({ scanId, repoUrl });
+    } catch (error) {
+      setAuditError(error instanceof Error ? error.message : "Unable to start the audit.");
+    } finally {
+      setIsRunning(false);
+    }
   };
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-black font-mono text-[#00ff66]">
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(0,255,102,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(0,255,102,0.06)_1px,transparent_1px)] bg-[size:36px_36px] opacity-30" />
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(0,255,102,0.14),transparent_38%),radial-gradient(circle_at_bottom_right,rgba(255,170,0,0.12),transparent_28%)]" />
-      <div className="crt pointer-events-none absolute inset-0 opacity-30" />
-      <div className="scanline pointer-events-none absolute inset-0 opacity-40" />
+    <main className="min-h-screen overflow-hidden bg-[#07090d] text-[#eef5f0]">
+      <div className="ambient-grid pointer-events-none fixed inset-0" />
+      <div className="ambient-glow pointer-events-none fixed inset-0" />
 
-      <section className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
-        <header className="border-double border-4 border-[#00ff66] bg-black/80 px-4 py-4 shadow-[0_0_40px_rgba(0,255,102,0.15)] backdrop-blur md:px-6">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-4">
-              <div className="relative flex h-16 w-16 items-center justify-center border-double border-4 border-[#00ff66] bg-black shadow-[0_0_24px_rgba(0,255,102,0.25)]">
-                <Shield className="h-8 w-8 text-[#00ff66]" />
-                <div className="absolute -bottom-2 -right-2 border-2 border-[#ffaa00] bg-black px-1 py-0.5 text-[10px] text-[#ffaa00]">
-                  VG
-                </div>
-              </div>
-              <div>
-                <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.4em] text-[#ffaa00]">
-                  <Radio className="h-3.5 w-3.5 animate-pulse" />
-                  VoidGuard Agency Uplink
-                </div>
-                <h1 className="mt-2 text-3xl font-black uppercase tracking-[0.18em] text-[#e8ffe8] sm:text-4xl">
-                  VoidGuard AI
-                </h1>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-[#7dffaf] sm:text-base">
-                  Autonomous AI Security Agency for developers who want leaked secrets hunted,
-                  lockfiles audited, live CVEs queried, and secure GitHub remediations merged without hesitation.
-                </p>
-              </div>
-            </div>
+      <nav className="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
+        <a href="#top" className="flex items-center gap-3" aria-label="VoidGuard AI home">
+          <span className="brand-mark"><ShieldCheck size={19} /></span>
+          <span className="text-sm font-semibold tracking-[0.24em] text-white">VOIDGUARD <span className="text-[#7bffad]">AI</span></span>
+        </a>
+        <div className="hidden items-center gap-8 text-sm text-[#8f9d99] md:flex">
+          <a className="transition hover:text-white" href="#how-it-works">How it works</a>
+          <a className="transition hover:text-white" href="#workspace">Workspace</a>
+          <span className="flex items-center gap-2 text-[#7bffad]"><CircleDotDashed size={14} className="animate-pulse" /> Systems online</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {isAuthenticated ? (
+            <button onClick={() => void signOut()} className="subtle-button">Sign out</button>
+          ) : (
+            <button onClick={() => openAuth("login")} className="subtle-button">Log in</button>
+          )}
+          <button onClick={() => openAuth("signup")} className="primary-button hidden sm:inline-flex"><UserPlus size={15} /> Join the crew</button>
+        </div>
+      </nav>
 
-            <div className="flex flex-col gap-3 sm:items-end">
-              <button
-                type="button"
-                onClick={() => setAudioEnabled((current) => !current)}
-                className="inline-flex items-center gap-2 self-start border-double border-4 border-[#ffaa00] bg-[#1a1100] px-4 py-2 text-xs uppercase tracking-[0.3em] text-[#ffaa00] transition hover:bg-[#ffaa00] hover:text-black sm:self-auto"
-              >
-                <AudioLines className={`h-4 w-4 ${audioEnabled ? "animate-pulse" : "opacity-70"}`} />
-                Audio Alerts {audioEnabled ? "Armed" : "Muted"}
-              </button>
-              <div className="flex flex-wrap gap-2 sm:justify-end">
-                {BADGES.map((badge) => (
-                  <span
-                    key={badge}
-                    className="border-2 border-[#00ff66]/70 bg-[#021207] px-3 py-2 text-[10px] uppercase tracking-[0.28em] text-[#9bffbf] shadow-[0_0_20px_rgba(0,255,102,0.16)]"
-                  >
-                    {badge}
-                  </span>
-                ))}
-              </div>
-            </div>
+      <section id="top" className="relative z-10 mx-auto grid w-full max-w-7xl gap-14 px-5 pb-20 pt-12 sm:px-8 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-20 lg:pb-28 lg:pt-20">
+        <div>
+          <div className="eyebrow"><span className="eyebrow-dot" /> Autonomous security for code that matters</div>
+          <h1 className="hero-title mt-7 max-w-3xl">Find the breach<br /><span>before the breach</span>.</h1>
+          <p className="mt-7 max-w-xl text-lg leading-8 text-[#aab7b2]">VoidGuard deploys a focused AI security crew across your repository: hunting secrets, grounding dependency risk in live advisories, and preparing fixes your team can review.</p>
+          <div className="mt-9 flex flex-wrap items-center gap-4">
+            <button onClick={() => openAuth("signup")} className="primary-button px-5 py-3.5 text-sm"><Zap size={16} /> Start protecting your code <ArrowUpRight size={16} /></button>
+            <a href="#how-it-works" className="text-sm text-[#9aa8a3] transition hover:text-white">See the workflow <span className="ml-1">↓</span></a>
           </div>
-        </header>
+          <div className="mt-10 flex flex-wrap gap-x-7 gap-y-3 text-xs text-[#71817b]"><span>Private by default</span><span>Read-only first pass</span><span>Human approval before fixes</span></div>
+        </div>
 
-        <div className="mt-6 grid flex-1 gap-6 xl:grid-cols-[1.35fr_0.9fr]">
-          <section className="border-double border-4 border-[#00ff66] bg-black/80 p-4 shadow-[0_0_45px_rgba(0,255,102,0.18)] backdrop-blur md:p-6">
-            <div className="flex flex-col gap-5 border-double border-4 border-[#124d29] bg-[#010801] p-4 md:p-5">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <div className="text-xs uppercase tracking-[0.35em] text-[#ffaa00]">Live Strike Console</div>
-                  <h2 className="mt-2 text-2xl font-bold uppercase tracking-[0.16em] text-[#f1fff1]">
-                    Simulate a full autonomous repo takeover
-                  </h2>
-                </div>
-                <div className="flex items-center gap-3 border-2 border-[#ff3333] bg-[#160404] px-3 py-2 text-xs uppercase tracking-[0.2em] text-[#ff6b6b] shadow-[0_0_18px_rgba(255,51,51,0.2)]">
-                  <AlertTriangle className="h-4 w-4 animate-pulse" />
-                  High Severity Signals Live
-                </div>
-              </div>
-
-              <div className="grid gap-4 lg:grid-cols-[1.3fr_0.7fr]">
-                <div className="border-double border-4 border-[#00ff66] bg-black p-4 shadow-[inset_0_0_35px_rgba(0,255,102,0.08)]">
-                  <div className="flex items-center justify-between border-b-2 border-[#124d29] pb-3 text-xs uppercase tracking-[0.3em] text-[#7dffaf]">
-                    <span className="flex items-center gap-2">
-                      <Terminal className="h-4 w-4" />
-                      voidguard-agent terminal
-                    </span>
-                    <span className="text-[#ffaa00]">status: {isRunning ? "engaged" : "armed"}</span>
-                  </div>
-
-                  <div className="mt-4 space-y-4">
-                    <div className="space-y-2">
-                      <label htmlFor="repository-url" className="text-xs uppercase tracking-[0.25em] text-[#7dffaf]">
-                        voidguard-agent:~$ enter target repository url:
-                      </label>
-                      <div className="group flex items-center gap-2 border-double border-4 border-[#00ff66] bg-[#021207] px-3 py-3 transition hover:shadow-[0_0_22px_rgba(0,255,102,0.24)]">
-                        <ChevronRight className="h-4 w-4 shrink-0 text-[#00ff66]" />
-                        <input
-                          id="repository-url"
-                          value={repositoryUrl}
-                          onChange={(event) => setRepositoryUrl(event.target.value)}
-                          placeholder="https://github.com/acme/dev-tool"
-                          className="w-full bg-transparent text-sm text-[#e8ffe8] outline-none placeholder:text-[#3f8f5b]"
-                        />
-                        <GitBranch className="h-4 w-4 shrink-0 text-[#7dffaf] transition group-hover:text-[#00ff66]" />
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleRunAudit}
-                      disabled={isRunning}
-                      className="glow-button w-full border-double border-4 border-[#ffaa00] bg-[#1b1200] px-4 py-4 text-sm font-bold uppercase tracking-[0.35em] text-[#ffaa00] transition hover:-translate-y-0.5 hover:bg-[#ffaa00] hover:text-black disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {isRunning ? "AGENTS EXECUTING..." : "RUN AUTONOMOUS AUDIT"}
-                    </button>
-
-                    <div className="border-double border-4 border-[#124d29] bg-[#010501] p-3 text-xs text-[#7dffaf]">
-                      <div className="mb-3 flex items-center justify-between uppercase tracking-[0.28em]">
-                        <span>agent stream</span>
-                        <span className="text-[#ffaa00]">{activeMetric}</span>
-                      </div>
-                      <div className="h-[320px] space-y-2 overflow-y-auto pr-1 sm:h-[380px]">
-                        {auditLog.length === 0 ? (
-                          <div className="text-[#3f8f5b]">
-                            Awaiting operator input. Feed a repository to deploy the VoidGuard agent crew.
-                          </div>
-                        ) : (
-                          auditLog.map((line, index) => (
-                            <div key={`${line.text}-${index}`} className="flex gap-2 leading-6">
-                              <span className="text-[#3f8f5b]">[{String(index + 1).padStart(2, "0")}]</span>
-                              <span className={terminalToneClass(line.tone)}>{line.text || "_"}</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="border-double border-4 border-[#ffaa00] bg-[#120d00] p-4 shadow-[0_0_26px_rgba(255,170,0,0.12)]">
-                    <div className="text-xs uppercase tracking-[0.32em] text-[#ffaa00]">Target Snapshot</div>
-                    <p className="mt-4 break-all text-lg font-bold uppercase tracking-[0.08em] text-[#fff2cc]">
-                      {repoPreview}
-                    </p>
-                    <div className="mt-5 grid grid-cols-2 gap-3 text-xs uppercase tracking-[0.18em]">
-                      <div className="border border-[#ffaa00]/40 bg-black/50 p-3 text-[#ffd37a]">
-                        Risk Index
-                        <div className="mt-2 text-2xl font-black text-[#ff3333]">9.4</div>
-                      </div>
-                      <div className="border border-[#00ff66]/40 bg-black/50 p-3 text-[#8effb7]">
-                        Patch ETA
-                        <div className="mt-2 text-2xl font-black text-[#00ff66]">42s</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="border-double border-4 border-[#ff3333] bg-[#140405] p-4 shadow-[0_0_24px_rgba(255,51,51,0.14)]">
-                    <div className="flex items-center gap-2 text-xs uppercase tracking-[0.3em] text-[#ff6b6b]">
-                      <Zap className="h-4 w-4 animate-pulse" />
-                      Live Threat Feed
-                    </div>
-                    <ul className="mt-4 space-y-3 text-sm text-[#ffb0b0]">
-                      <li>• Secret leak probability spikes when CI config drift is detected.</li>
-                      <li>• Linkup CVE lookups enrich package intel with current exploit chatter.</li>
-                      <li>• GitHub patch generation preserves build health before merge.</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <aside className="flex flex-col gap-6">
-            <section className="border-double border-4 border-[#00ff66] bg-black/80 p-4 shadow-[0_0_40px_rgba(0,255,102,0.16)] md:p-5">
-              <div className="flex items-center gap-3 text-xs uppercase tracking-[0.32em] text-[#ffaa00]">
-                <Bot className="h-4 w-4 text-[#00ff66]" />
-                Agent Crew
-              </div>
-              <div className="mt-4 grid gap-4">
-                {AGENT_CREW.map((agent) => {
-                  const Icon = agent.icon;
-                  return (
-                    <article
-                      key={agent.name}
-                      className={`group border-double border-4 border-[#173d24] bg-[#020702] p-4 transition duration-300 hover:-translate-y-1 hover:border-[#00ff66] ${agent.pulse}`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.28em] text-[#7dffaf]">
-                            <span className={`inline-block h-3 w-3 rounded-full border border-current ${agent.tone} animate-pulse`} />
-                            {agent.role}
-                          </div>
-                          <h3 className="mt-2 text-lg font-bold uppercase tracking-[0.08em] text-[#f1fff1]">
-                            {agent.name}
-                          </h3>
-                        </div>
-                        <Icon className={`h-6 w-6 ${agent.tone} transition group-hover:scale-110`} />
-                      </div>
-                      <p className="mt-3 text-sm leading-6 text-[#a1d9b5]">{agent.detail}</p>
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
-
-            <section className="border-double border-4 border-[#ffaa00] bg-black/80 p-4 shadow-[0_0_35px_rgba(255,170,0,0.12)] md:p-5">
-              <div className="flex items-center gap-3 text-xs uppercase tracking-[0.32em] text-[#ffaa00]">
-                <Sparkles className="h-4 w-4" />
-                Why teams deploy VoidGuard
-              </div>
-              <div className="mt-4 space-y-4 text-sm leading-6 text-[#ffe0a0]">
-                <div className="border border-[#ffaa00]/40 bg-[#150d02] p-4">
-                  <div className="text-[11px] uppercase tracking-[0.25em] text-[#ffca66]">Autonomy</div>
-                  Security triage, patch writing, and build verification run as one coordinated operator loop.
-                </div>
-                <div className="border border-[#00ff66]/35 bg-[#041108] p-4 text-[#a8ffc8]">
-                  <div className="text-[11px] uppercase tracking-[0.25em] text-[#7dffaf]">Developer-native UX</div>
-                  Repo-first input, terminal-grade telemetry, and PR-ready fixes your engineers can trust.
-                </div>
-                <div className="border border-[#ff3333]/35 bg-[#120406] p-4 text-[#ffb7b7]">
-                  <div className="text-[11px] uppercase tracking-[0.25em] text-[#ff7a7a]">Immediate danger surfacing</div>
-                  Hardcoded secrets, actively exploited packages, and dangerous dependency drift render in seconds.
-                </div>
-              </div>
-            </section>
-          </aside>
+        <div className="hero-visual relative min-h-[360px]">
+          <div className="orbit orbit-one" />
+          <div className="orbit orbit-two" />
+          <div className="signal-core"><ShieldCheck size={38} strokeWidth={1.4} /></div>
+          <div className="signal-label signal-label-top"><span className="signal-pulse" /> secrets detected</div>
+          <div className="signal-label signal-label-right">CVE intelligence <span className="text-[#7bffad]">LIVE</span></div>
+          <div className="signal-label signal-label-bottom">patch confidence <span className="text-white">94.8%</span></div>
+          <div className="hero-caption"><Activity size={14} className="text-[#7bffad]" /> Agent mesh / 04 specialists / 01 mission</div>
         </div>
       </section>
 
-      <div
-        className={`fixed inset-0 z-20 flex items-end justify-center bg-black/75 p-3 transition duration-500 sm:p-6 ${
-          showWaitlist ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
-        }`}
-      >
-        <div
-          className={`w-full max-w-3xl border-double border-4 border-[#00ff66] bg-black p-4 shadow-[0_0_60px_rgba(0,255,102,0.24)] transition duration-500 sm:p-6 ${
-            showWaitlist ? "translate-y-0" : "translate-y-10"
-          }`}
-        >
-          <div className="glitch-title text-xs uppercase tracking-[0.34em] text-[#ffaa00]">Deployment Authorization Required</div>
-          <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-2xl">
-              <h2 className="text-2xl font-black uppercase tracking-[0.14em] text-[#ecffec] sm:text-3xl">
-                VoidGuard Crew is ready to protect your codebase.
-              </h2>
-              <p className="mt-3 text-sm leading-6 text-[#9bffbf]">
-                Enter your email to join the operator queue. We&apos;ll store your request securely and use the repository URL to prepare your audit handoff.
-              </p>
-            </div>
-            <div className="border-2 border-[#ffaa00] bg-[#120d00] px-4 py-3 text-xs uppercase tracking-[0.26em] text-[#ffd37a]">
-              Queue node: armed
-            </div>
-          </div>
-
-          <form onSubmit={handleWaitlistSubmit} className="mt-6 space-y-4">
-            <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
-              <div className="border-double border-4 border-[#00ff66] bg-[#021207] px-4 py-4 shadow-[0_0_24px_rgba(0,255,102,0.14)]">
-                <label htmlFor="waitlist-email" className="mb-2 block text-xs uppercase tracking-[0.28em] text-[#7dffaf]">
-                  operator email
-                </label>
-                <input
-                  id="waitlist-email"
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  placeholder="you@company.com"
-                  className="w-full bg-transparent text-lg text-[#f1fff1] outline-none placeholder:text-[#3f8f5b]"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={submitState === "submitting" || submitState === "success"}
-                className="border-double border-4 border-[#ffaa00] bg-[#1b1200] px-6 py-4 text-sm font-bold uppercase tracking-[0.32em] text-[#ffaa00] transition hover:bg-[#ffaa00] hover:text-black disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {submitState === "submitting"
-                  ? "DECRYPTING ACCESS KEY..."
-                  : submitState === "success"
-                    ? "ACCESS GRANTED"
-                    : submitState === "error"
-                      ? "RETRY JOIN"
-                    : "JOIN WAITLIST"}
-              </button>
-            </div>
-
-            <div className="border-double border-4 border-[#124d29] bg-[#010501] p-4 text-sm leading-6 text-[#a8ffc8]">
-              {submitState === "success" ? (
-                <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-[0.3em] text-[#ffaa00]">queue handshake complete</div>
-                  <p className="text-base text-[#ecffec]">
-                    ACCESS GRANTED. Agent {email}, your request is secured in the VoidGuard queue.
-                  </p>
-                </div>
-              ) : submitState === "error" ? (
-                <div className="space-y-2 text-[#ffb0b0]">
-                  <div className="text-xs uppercase tracking-[0.3em] text-[#ff6b6b]">handshake failed</div>
-                  <p>{submitError}</p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-[0.3em] text-[#ffaa00]">Convex queue online</div>
-                  <p>
-                    The audit is simulated in the browser. Waitlist submissions are validated and stored securely in Convex.
-                  </p>
-                </div>
-              )}
-            </div>
-          </form>
+      <section id="how-it-works" className="relative z-10 border-y border-white/[0.07] bg-white/[0.018]">
+        <div className="mx-auto grid w-full max-w-7xl gap-8 px-5 py-14 sm:px-8 md:grid-cols-3 md:gap-10 md:py-20">
+          <Step number="01" title="Connect" copy="Point VoidGuard at a GitHub repository. The first pass stays read-only and scoped." icon={<GitBranch size={17} />} />
+          <Step number="02" title="Investigate" copy="Specialists inspect credential patterns and ground dependency findings against live security sources." icon={<ScanLine size={17} />} />
+          <Step number="03" title="Review" copy="Get evidence, risk context, and an explainable patch proposal before anything changes." icon={<CheckCircle2 size={17} />} />
         </div>
-      </div>
+      </section>
 
-      <style jsx global>{`
-        @keyframes crt-flicker {
-          0%, 100% { opacity: 0.18; }
-          10% { opacity: 0.22; }
-          20% { opacity: 0.15; }
-          30% { opacity: 0.26; }
-          40% { opacity: 0.17; }
-          50% { opacity: 0.23; }
-          60% { opacity: 0.16; }
-          70% { opacity: 0.2; }
-          80% { opacity: 0.13; }
-          90% { opacity: 0.24; }
-        }
+      <section id="workspace" className="relative z-10 mx-auto w-full max-w-7xl px-5 py-20 sm:px-8 lg:py-28">
+        <div className="mb-10 flex flex-col justify-between gap-5 md:flex-row md:items-end">
+          <div><div className="eyebrow">Your secure workspace</div><h2 className="section-title mt-3">A calm command center<br />for noisy risk.</h2></div>
+          <p className="max-w-sm text-sm leading-6 text-[#879691]">Sign up to run a live, read-only repository audit. Your findings remain scoped to your account.</p>
+        </div>
+        <div className="workspace-shell">
+          <div className="workspace-toolbar"><div className="flex items-center gap-2"><span className="window-dot bg-[#ff6b6b]" /><span className="window-dot bg-[#ffc86b]" /><span className="window-dot bg-[#7bffad]" /></div><span className="flex items-center gap-2 text-xs text-[#7f9089]"><Terminal size={14} /> voidguard / audit console</span><span className="text-xs text-[#7bffad]">{isAuthenticated ? "authenticated" : "preview mode"}</span></div>
+          <div className="grid gap-8 p-5 md:p-8 lg:grid-cols-[1fr_0.72fr]">
+            <div>
+              <div className="mb-3 flex items-center justify-between"><label htmlFor="repo" className="text-sm font-medium text-white">Repository target</label><span className="text-xs text-[#687872]">GitHub / HTTPS</span></div>
+              <div className="repo-input"><GitBranch size={17} className="shrink-0 text-[#7bffad]" /><input id="repo" value={repoUrl} onChange={(event) => setRepoUrl(event.target.value)} placeholder="https://github.com/owner/repository" /><span className="text-xs text-[#5f7169]">↵</span></div>
+              <div className="mt-5 flex flex-wrap items-center gap-3"><button onClick={() => void startAudit()} disabled={isRunning || authLoading} className="primary-button px-4 py-3 text-sm disabled:cursor-not-allowed disabled:opacity-60">{isRunning ? <><Activity size={15} className="animate-pulse" /> Crew is investigating</> : <><ScanLine size={15} /> Run read-only audit</>}</button>{!isAuthenticated && <span className="text-xs text-[#71817b]">Create an account to unlock scans</span>}</div>
+              {auditError && <p className="mt-4 flex items-center gap-2 text-sm text-[#ff9a9a]"><AlertTriangle size={15} /> {auditError}</p>}
+              <div className="terminal-panel mt-8"><div className="mb-4 flex items-center justify-between border-b border-white/[0.08] pb-3 text-xs text-[#6f8079]"><span>live agent stream</span><span className={scan?.status === "completed" ? "text-[#7bffad]" : "text-[#ffc86b]"}>{scan ? statusCopy[scan.status] : "waiting"}</span></div>{logs?.length ? <div className="space-y-3">{logs.map((log) => <div key={log._id} className="flex gap-3 text-xs leading-5"><span className="shrink-0 text-[#4f625a]">{log.agent}</span><span className={log.level === "error" ? "text-[#ff8585]" : log.level === "success" ? "text-[#7bffad]" : log.level === "warning" ? "text-[#ffc86b]" : "text-[#a9b9b2]"}>{log.message}</span></div>)}</div> : <div className="flex min-h-40 flex-col items-center justify-center gap-3 text-center text-sm text-[#53645d]"><LockKeyhole size={22} /><span>{isAuthenticated ? "Your next audit will appear here." : "Sign up to connect your first repository."}</span></div>}</div>
+            </div>
+            <div className="space-y-5"><div className="metric-card"><div className="flex items-center justify-between text-xs text-[#7f9089]"><span>Target</span><GitBranch size={15} /></div><div className="mt-4 truncate text-sm font-medium text-white">{repoLabel}</div><div className="mt-2 text-xs text-[#64756e]">Read-only access / scoped session</div></div><div className="metric-card"><div className="flex items-center justify-between text-xs text-[#7f9089]"><span>Findings</span><AlertTriangle size={15} className="text-[#ffc86b]" /></div><div className="mt-3 text-4xl font-semibold tracking-tight text-white">{findings?.length ?? "—"}</div><div className="mt-2 text-xs text-[#64756e]">Evidence-backed risk register</div></div><div className="metric-card"><div className="flex items-center gap-2 text-xs text-[#7f9089]"><CircleDotDashed size={15} className="text-[#7bffad]" /> Crew status</div><div className="mt-4 flex items-center gap-2 text-sm text-[#d7e5dd]"><span className="h-2 w-2 rounded-full bg-[#7bffad] shadow-[0_0_12px_#7bffad]" /> Security Lead ready</div><div className="mt-2 text-xs text-[#64756e]">Secrets / dependencies / QA</div></div></div>
+          </div>
+        </div>
+      </section>
 
-        @keyframes scanline-move {
-          0% { transform: translateY(-100%); }
-          100% { transform: translateY(100vh); }
-        }
+      <footer className="relative z-10 border-t border-white/[0.07] px-5 py-8 sm:px-8"><div className="mx-auto flex w-full max-w-7xl flex-col justify-between gap-3 text-xs text-[#596962] sm:flex-row"><span>VOIDGUARD AI / PRIVATE SECURITY OPERATIONS</span><span>Built for teams that ship fast.</span></div></footer>
 
-        @keyframes glitch-shift {
-          0%, 100% { text-shadow: 0 0 0 rgba(255, 51, 51, 0.7), 0 0 0 rgba(0, 255, 102, 0.6); }
-          20% { text-shadow: 2px 0 0 rgba(255, 51, 51, 0.7), -2px 0 0 rgba(0, 255, 102, 0.6); }
-          40% { text-shadow: -2px 0 0 rgba(255, 51, 51, 0.7), 2px 0 0 rgba(0, 255, 102, 0.6); }
-          60% { text-shadow: 3px 0 0 rgba(255, 170, 0, 0.7), -3px 0 0 rgba(0, 255, 102, 0.55); }
-          80% { text-shadow: -1px 0 0 rgba(255, 51, 51, 0.7), 1px 0 0 rgba(0, 255, 102, 0.6); }
-        }
-
-        .crt {
-          background: radial-gradient(circle at center, rgba(0, 255, 102, 0.08), transparent 60%);
-          animation: crt-flicker 0.22s infinite;
-          mix-blend-mode: screen;
-        }
-
-        .scanline::before {
-          content: "";
-          position: absolute;
-          inset: 0;
-          background: linear-gradient(to bottom, transparent 0%, rgba(255, 255, 255, 0.04) 45%, rgba(255, 255, 255, 0.08) 50%, transparent 100%);
-          animation: scanline-move 7s linear infinite;
-        }
-
-        .glitch-title {
-          animation: glitch-shift 1.4s infinite steps(2, end);
-        }
-
-        .glow-button {
-          box-shadow: 0 0 0 rgba(255, 170, 0, 0.2);
-        }
-
-        .glow-button:hover {
-          box-shadow: 0 0 24px rgba(255, 170, 0, 0.36);
-        }
-      `}</style>
+      {authMode && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="auth-title"><div className="auth-modal"><button aria-label="Close" onClick={() => setAuthMode(null)} className="absolute right-5 top-5 text-[#71817b] transition hover:text-white"><X size={18} /></button><div className="brand-mark"><ShieldCheck size={19} /></div><h2 id="auth-title" className="mt-6 text-2xl font-semibold text-white">{authMode === "signup" ? "Join the security crew" : "Welcome back"}</h2><p className="mt-2 text-sm leading-6 text-[#8e9d97]">{authMode === "signup" ? "Create your private workspace and run your first repository audit." : "Sign in to access your audit history and findings."}</p><form onSubmit={handleAuth} className="mt-7 space-y-4"><label className="field-label">Email<input autoComplete="email" type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" /></label><label className="field-label">Password<input autoComplete={authMode === "signup" ? "new-password" : "current-password"} type="password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 8 characters" /></label>{authError && <p className="text-sm text-[#ff9a9a]">{authError}</p>}<button className="primary-button w-full justify-center py-3.5" disabled={authState === "working"}>{authState === "working" ? "Securing session…" : authMode === "signup" ? <><UserPlus size={16} /> Create account</> : <><LogIn size={16} /> Log in</>}</button></form><button onClick={() => { setAuthMode(authMode === "signup" ? "login" : "signup"); setAuthError(""); }} className="mt-5 w-full text-center text-sm text-[#8e9d97] hover:text-white">{authMode === "signup" ? "Already have an account? Log in" : "New to VoidGuard? Create an account"}</button></div></div>}
     </main>
   );
+}
+
+function Step({ number, title, copy, icon }: { number: string; title: string; copy: string; icon: ReactNode }) {
+  return <article className="step-item"><div className="flex items-center justify-between text-xs text-[#64756e]"><span>{number}</span><span className="step-icon">{icon}</span></div><h3 className="mt-6 text-lg font-medium text-white">{title}</h3><p className="mt-3 text-sm leading-6 text-[#7f9089]">{copy}</p></article>;
 }
