@@ -468,8 +468,7 @@ export default function Home() {
                 VoidGuard Crew is ready to protect your codebase.
               </h2>
               <p className="mt-3 text-sm leading-6 text-[#9bffbf]">
-                Enter your email to preview the operator handoff. This interactive demo does not
-                transmit or store your information yet.
+                Enter your email to join the operator queue. We&apos;ll store your request securely and use the repository URL to prepare your audit handoff.
               </p>
             </div>
             <div className="border-2 border-[#ffaa00] bg-[#120d00] px-4 py-3 text-xs uppercase tracking-[0.26em] text-[#ffd37a]">
