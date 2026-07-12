@@ -2,8 +2,9 @@ import { DatabaseProvider } from "@/components/Provider";
 import "./globals.css";
 
 export const metadata = {
-  title: "Hermes Hack Speedrun",
-  description: "Built for speed.",
+  title: "VoidGuard AI | Autonomous Security Agency",
+  description:
+    "VoidGuard AI hunts leaked secrets, audits dependencies, and prepares secure GitHub remediations.",
 };
 
 export default function RootLayout({
