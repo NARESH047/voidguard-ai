@@ -1,37 +1,43 @@
 # VoidGuard AI Workspace
 
 ## Product
-VoidGuard AI is an authenticated security operations workspace deployed as a static Next.js frontend on Cloudflare Pages with a Convex backend. It performs bounded, read-only GitHub repository acquisition, local secret-pattern detection with evidence redaction, OpenAI web-grounded dependency analysis, remediation generation, independent QA verification, and auditable risk acceptance.
+VoidGuard AI is an open, no-login security operations workspace deployed as a static Next.js frontend on Cloudflare Pages with a Convex backend. Anyone can paste a public GitHub repository link and run a bounded read-only audit.
 
-## Core architecture
-- `app/page.tsx` — focused marketing shell and authenticated workspace entry.
-- `src/components/AuthDialog.tsx` — Convex Auth email/password signup and login.
-- `src/components/TerminalDashboard.tsx` — real-time scan history, agent logs, findings, citations, patches, and risk decisions.
-- `convex/schema.ts` — auth, waitlist, scans, scan logs, findings, and risk-register tables.
-- `convex/mutations.ts` — authorized scan/read/write functions and internal orchestration mutations.
-- `convex/security_lead.ts` — bounded multi-agent orchestration action.
-- `convex/github.ts` — bounded GitHub API repository acquisition.
-- `convex/grounding.ts` — OpenAI Responses API web-search grounding with authoritative-domain validation.
-- `convex/lib/security.ts` — repository URL validation, dependency extraction, and redacted secret detection.
+## Architecture
+- `app/page.tsx`: public Linear-inspired product shell and primary workspace entry.
+- `src/components/TerminalDashboard.tsx`: anonymous repository input, scan history for the current browser tab, live logs, findings, citations, proposals, and risk decisions.
+- `convex/mutations.ts`: capability-session isolation, quotas, legal state transitions, logs, findings, and risk-register writes.
+- `convex/security_lead.ts`: bounded autonomous orchestration.
+- `convex/github.ts`: public-only, commit-pinned GitHub acquisition.
+- `convex/grounding.ts`: OpenAI Responses API web-search grounding with observed-source validation.
+- `convex/lib/security.ts`: URL parsing, redaction, exact dependency extraction, and deterministic patch validation.
+
+## Public access model
+- No account or login is required.
+- Each browser tab receives a random UUID capability stored in `sessionStorage` when its first scan starts.
+- Scan documents never expose the stored capability owner key.
+- Each capability can have one active scan and five scans per rolling hour.
+- The deployment allows at most 30 new scans per rolling hour across all visitors.
+- Private repositories are rejected. Visitors must make a repository public on GitHub before sharing its link.
 
 ## Security invariants
-- Secrets and provider credentials live only in Convex environment variables.
-- Raw credential matches are never written to Convex or sent to model providers.
-- Scan, log, finding, and risk-register access is checked against the authenticated identity.
-- Repository acquisition is limited to public repositories and bounded by file count, file size, repository size, and extension allowlists. Private repositories require future per-user GitHub App authorization.
-- GitHub reads are pinned to one commit and decoded content is rechecked against the byte limit.
-- Exact dependency versions use SemVer-compliant validation; unsafe manifest or lockfile metadata is rejected.
-- Dependency findings require exact-version output and authoritative HTTPS citations.
-- Citation URLs must match source records emitted by the Responses web-search tool.
-- Dependency versions come from package-lock.json when available; unproven ranges are skipped.
-- Generated patches require a separate QA verdict, deterministic package/version validation, and remain review-only.
-- Provider or grounding failures mark the scan failed rather than presenting a partial audit as complete.
-- Each account is limited to one active scan and five scans per rolling hour.
-- Active scans use renewable leases, stale attempts restart cleanly, and terminal transitions cannot be rewritten.
-- Production environment values must never be copied into repository files.
+- Raw credential matches are never persisted or sent to model providers.
+- Repository acquisition is public-only, pinned to one commit, bounded by repository size, file count, response size, decoded bytes, and extension allowlists.
+- Exact dependency versions use SemVer-compliant validation; unsafe manifest and lockfile metadata is rejected.
+- Persisted citations must be authoritative and match observed Responses web-search sources.
+- Generated patches require separate model QA plus deterministic one-dependency/one-version validation and remain review-only.
+- Provider failures make the scan fail rather than presenting partial work as complete.
+- Active scans use renewable leases; stale attempts restart cleanly and terminal states cannot be rewritten.
 
 ## Verification
-- `npm test`
-- `npm run lint`
-- `npm run typecheck`
-- `npm run build`
+```bash
+npm test
+npm run lint
+npm run typecheck
+NEXT_PUBLIC_CONVEX_URL=<production-url> npm run build
+```
+
+## Production
+- Frontend: https://voidguard-ai.pages.dev/
+- Application source: https://github.com/NARESH047/voidguard-ai
+- Synthetic fixture: https://github.com/NARESH047/voidguard-fixture

@@ -38,7 +38,8 @@ export default defineSchema({
   })
     .index("by_owner", ["ownerTokenIdentifier"])
     .index("by_owner_and_startedAt", ["ownerTokenIdentifier", "startedAt"])
-    .index("by_owner_and_status", ["ownerTokenIdentifier", "status"]),
+    .index("by_owner_and_status", ["ownerTokenIdentifier", "status"])
+    .index("by_startedAt", ["startedAt"]),
   scanLogs: defineTable({
     scanId: v.id("scans"),
     agent: v.union(

@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { createOpenAIClient, lookupDependencyVulnerabilities, type GroundedVulnerability } from "./grounding";
 import { loadRepositoryFiles } from "./github";
 import { detectSecrets, extractDependencies, validateRemediationPatch } from "./lib/security";
+import { anonymousOwnerKey } from "./lib/session";
 
 const agents = {
   lead: "SecurityLead" as const,
@@ -100,13 +101,12 @@ async function verifyRemediation(grounding: GroundedVulnerability, remediation: 
 }
 
 export const runAutonomousAudit = action({
-  args: { scanId: v.id("scans") },
+  args: { scanId: v.id("scans"), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity?.tokenIdentifier) throw new Error("Authentication required.");
+    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
     const scan = await ctx.runQuery(internal.mutations.requireOwnedScan, {
       scanId: args.scanId,
-      ownerTokenIdentifier: identity.tokenIdentifier,
+      ownerTokenIdentifier,
     });
     if (!scan) throw new Error("Scan not found.");
 

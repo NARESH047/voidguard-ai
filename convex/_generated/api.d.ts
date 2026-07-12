@@ -13,6 +13,7 @@ import type * as github from "../github.js";
 import type * as grounding from "../grounding.js";
 import type * as http from "../http.js";
 import type * as lib_security from "../lib/security.js";
+import type * as lib_session from "../lib/session.js";
 import type * as mutations from "../mutations.js";
 import type * as security_lead from "../security_lead.js";
 import type * as waitlist from "../waitlist.js";
@@ -29,6 +30,7 @@ declare const fullApi: ApiFromModules<{
   grounding: typeof grounding;
   http: typeof http;
   "lib/security": typeof lib_security;
+  "lib/session": typeof lib_session;
   mutations: typeof mutations;
   security_lead: typeof security_lead;
   waitlist: typeof waitlist;

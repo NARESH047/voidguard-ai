@@ -1,92 +1,72 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
+import type { ReactNode } from "react";
 import {
-  Activity,
+  ArrowDown,
   ArrowUpRight,
   CheckCircle2,
-  CircleDotDashed,
+  CircleDot,
   GitBranch,
+  Globe2,
   ScanLine,
   ShieldCheck,
-  UserPlus,
-  Zap,
+  Sparkles,
 } from "lucide-react";
-import { AuthDialog, type AuthMode } from "@/src/components/AuthDialog";
 import { TerminalDashboard } from "@/src/components/TerminalDashboard";
 
 export default function Home() {
-  const { isAuthenticated, isLoading } = useConvexAuth();
-  const { signOut } = useAuthActions();
-  const [authMode, setAuthMode] = useState<AuthMode | null>(null);
-
   return (
-    <main className="min-h-screen overflow-hidden bg-[#07090d] text-[#eef5f0]">
-      <div className="ambient-grid pointer-events-none fixed inset-0" />
-      <div className="ambient-glow pointer-events-none fixed inset-0" />
+    <main className="min-h-screen overflow-hidden bg-[#08090a] text-[#f7f8f8]">
+      <div className="ambient-grid pointer-events-none fixed inset-0 opacity-50" />
+      <div className="linear-glow pointer-events-none fixed inset-x-0 top-0 h-[720px]" />
 
-      <nav className="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-        <a href="#top" className="flex items-center gap-3" aria-label="VoidGuard AI home">
-          <span className="brand-mark"><ShieldCheck size={19} /></span>
-          <span className="text-sm font-semibold tracking-[0.24em] text-white">VOIDGUARD <span className="text-[#7bffad]">AI</span></span>
-        </a>
-        <div className="hidden items-center gap-8 text-sm text-[#8f9d99] md:flex">
-          <a className="transition hover:text-white" href="#workflow">Workflow</a>
-          <a className="transition hover:text-white" href="#workspace">Operations</a>
-          <span className="flex items-center gap-2 text-[#7bffad]"><CircleDotDashed size={14} className="animate-pulse" /> Systems online</span>
-        </div>
-        <div className="flex items-center gap-2">
-          {isAuthenticated ? <button onClick={() => void signOut()} className="subtle-button">Sign out</button> : <button onClick={() => setAuthMode("login")} className="subtle-button">Log in</button>}
-          {!isAuthenticated && <button onClick={() => setAuthMode("signup")} className="primary-button hidden sm:inline-flex"><UserPlus size={15} /> Create workspace</button>}
+      <nav className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#08090a]/85 backdrop-blur-xl">
+        <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between px-5 sm:px-8">
+          <a href="#top" className="flex items-center gap-3" aria-label="VoidGuard AI home">
+            <span className="brand-mark"><ShieldCheck size={18} /></span>
+            <span className="text-sm font-medium tracking-[-0.01em] text-[#f7f8f8]">VoidGuard <span className="text-[#8d8cff]">AI</span></span>
+          </a>
+          <div className="hidden items-center gap-7 text-[13px] text-[#8a8f98] md:flex">
+            <a className="transition hover:text-[#f7f8f8]" href="#workflow">How it works</a>
+            <a className="transition hover:text-[#f7f8f8]" href="#workspace">Public workspace</a>
+            <span className="flex items-center gap-2"><CircleDot size={12} className="text-[#43c887]" /> Systems operational</span>
+          </div>
+          <a href="#workspace" className="primary-button px-4 py-2.5 text-xs">Scan a public repo <ArrowUpRight size={14} /></a>
         </div>
       </nav>
 
-      <section id="top" className="relative z-10 mx-auto grid w-full max-w-7xl gap-14 px-5 pb-20 pt-12 sm:px-8 lg:grid-cols-[1.08fr_0.92fr] lg:items-center lg:gap-20 lg:pb-28 lg:pt-20">
-        <div>
-          <div className="eyebrow"><span className="eyebrow-dot" /> Autonomous security, bounded by evidence</div>
-          <h1 className="hero-title mt-7 max-w-3xl">Find the breach<br /><span>before the breach</span>.</h1>
-          <p className="mt-7 max-w-xl text-lg leading-8 text-[#aab7b2]">VoidGuard coordinates a focused security crew across your repository: redacting exposed credentials, grounding dependency risk in authoritative sources, and withholding patches until an independent verifier approves them.</p>
-          <div className="mt-9 flex flex-wrap items-center gap-4">
-            <button onClick={() => isAuthenticated ? document.querySelector("#workspace")?.scrollIntoView() : setAuthMode("signup")} className="primary-button px-5 py-3.5 text-sm"><Zap size={16} /> {isAuthenticated ? "Open operations" : "Start protecting code"} <ArrowUpRight size={16} /></button>
-            <a href="#workflow" className="text-sm text-[#9aa8a3] transition hover:text-white">Inspect the controls <span className="ml-1">↓</span></a>
-          </div>
-          <div className="mt-10 flex flex-wrap gap-x-7 gap-y-3 text-xs text-[#71817b]"><span>Read-only acquisition</span><span>Raw secrets never persisted</span><span>Human approval before changes</span></div>
+      <section id="top" className="relative z-10 mx-auto flex min-h-[690px] w-full max-w-6xl flex-col items-center justify-center px-5 pb-24 pt-20 text-center sm:px-8">
+        <div className="public-launch-pill"><Globe2 size={13} /> Open to everyone · no account required</div>
+        <h1 className="linear-hero mt-8 max-w-5xl">Security review for any<br className="hidden sm:block" /> public GitHub repository.</h1>
+        <p className="mt-7 max-w-2xl text-base leading-7 text-[#8a8f98] sm:text-lg">Paste a repository link. VoidGuard runs a bounded, read-only investigation, redacts credential evidence, grounds dependency risk in live advisories, and withholds unsafe remediation proposals.</p>
+        <div className="mt-9 flex flex-col items-center gap-3 sm:flex-row">
+          <a href="#workspace" className="primary-button px-5 py-3.5 text-sm"><Sparkles size={15} /> Start a public audit <ArrowDown size={14} /></a>
+          <a href="#workflow" className="subtle-button px-5 py-3.5 text-sm">Review the safeguards</a>
         </div>
+        <div className="mt-12 flex flex-wrap justify-center gap-x-8 gap-y-3 text-xs text-[#62666d]"><span>Read-only GitHub access</span><span>40-file maximum</span><span>Source-bound citations</span><span>Human-controlled proposals</span></div>
+      </section>
 
-        <div className="hero-visual relative min-h-[360px]" aria-hidden="true">
-          <div className="orbit orbit-one" /><div className="orbit orbit-two" />
-          <div className="signal-core"><ShieldCheck size={38} strokeWidth={1.4} /></div>
-          <div className="signal-label signal-label-top"><span className="signal-pulse" /> evidence redacted</div>
-          <div className="signal-label signal-label-right">advisory grounding <span className="text-[#7bffad]">LIVE</span></div>
-          <div className="signal-label signal-label-bottom">patch policy <span className="text-white">HUMAN REVIEW</span></div>
-          <div className="hero-caption"><Activity size={14} className="text-[#7bffad]" /> 04 agents / 01 bounded mission</div>
+      <section id="workflow" className="relative z-10 mx-auto w-full max-w-7xl px-5 pb-20 sm:px-8 lg:pb-28">
+        <div className="workflow-strip">
+          <Step number="01" title="Share a public link" copy="Private repository? Make it public on GitHub first, then paste the repository URL." icon={<GitBranch size={16} />} />
+          <Step number="02" title="Watch the crew investigate" copy="A bounded file set is inspected locally while exact dependency versions are checked against observed advisory sources." icon={<ScanLine size={16} />} />
+          <Step number="03" title="Review evidence, not claims" copy="Raw credentials stay redacted. Patches remain proposals and pass model plus deterministic validation." icon={<CheckCircle2 size={16} />} />
         </div>
       </section>
 
-      <section id="workflow" className="relative z-10 border-y border-white/[0.07] bg-white/[0.018]">
-        <div className="mx-auto grid w-full max-w-7xl gap-8 px-5 py-14 sm:px-8 md:grid-cols-3 md:gap-10 md:py-20">
-          <Step number="01" title="Acquire safely" copy="Fetch a bounded set of eligible files through the GitHub API. No repository clone and no write permissions." icon={<GitBranch size={17} />} />
-          <Step number="02" title="Ground every claim" copy="Detect credential patterns locally and verify dependency impact with exact-version, authoritative web evidence." icon={<ScanLine size={17} />} />
-          <Step number="03" title="Verify before action" copy="An independent QA agent rejects unsupported upgrades. Approved output remains a reviewable proposal." icon={<CheckCircle2 size={17} />} />
+      <section id="workspace" className="relative z-10 mx-auto w-full max-w-[1480px] px-4 pb-24 sm:px-8 lg:pb-32">
+        <div className="mb-8 flex flex-col justify-between gap-5 px-1 md:flex-row md:items-end">
+          <div><div className="workspace-kicker">Public operations</div><h2 className="linear-section-title mt-3">Paste a link. Follow the evidence.</h2></div>
+          <p className="max-w-md text-sm leading-6 text-[#8a8f98]">No signup wall. Every browser tab gets an isolated capability session with strict per-session and global quotas.</p>
         </div>
+        <TerminalDashboard />
       </section>
 
-      <section id="workspace" className="relative z-10 mx-auto w-full max-w-[1440px] px-5 py-20 sm:px-8 lg:py-28">
-        <div className="mb-10 flex flex-col justify-between gap-5 md:flex-row md:items-end">
-          <div><div className="eyebrow">Authenticated operations</div><h2 className="section-title mt-3">One workspace.<br />Every decision traceable.</h2></div>
-          <p className="max-w-md text-sm leading-6 text-[#879691]">Run bounded audits, watch specialist logs arrive in real time, inspect citations, and document accepted risk without leaving the workspace.</p>
-        </div>
-        <TerminalDashboard key={isAuthenticated ? "authenticated" : "preview"} isAuthenticated={isAuthenticated} authLoading={isLoading} onRequireAuth={() => setAuthMode("signup")} />
-      </section>
-
-      <footer className="relative z-10 border-t border-white/[0.07] px-5 py-8 sm:px-8"><div className="mx-auto flex w-full max-w-7xl flex-col justify-between gap-3 text-xs text-[#596962] sm:flex-row"><span>VOIDGUARD AI / SECURITY OPERATIONS</span><span>Evidence first. Human controlled.</span></div></footer>
-
-      {authMode && <AuthDialog mode={authMode} onClose={() => setAuthMode(null)} onModeChange={setAuthMode} />}
+      <footer className="relative z-10 border-t border-white/[0.06] px-5 py-8 sm:px-8"><div className="mx-auto flex w-full max-w-7xl flex-col justify-between gap-3 text-xs text-[#62666d] sm:flex-row"><span>VOIDGUARD AI / PUBLIC SECURITY OPERATIONS</span><span>Evidence first. Human controlled.</span></div></footer>
     </main>
   );
 }
 
 function Step({ number, title, copy, icon }: { number: string; title: string; copy: string; icon: ReactNode }) {
-  return <article className="step-item"><div className="flex items-center justify-between text-xs text-[#64756e]"><span>{number}</span><span className="step-icon">{icon}</span></div><h3 className="mt-6 text-lg font-medium text-white">{title}</h3><p className="mt-3 text-sm leading-6 text-[#7f9089]">{copy}</p></article>;
+  return <article className="workflow-step"><div className="flex items-center justify-between text-[11px] text-[#62666d]"><span>{number}</span><span className="step-icon">{icon}</span></div><h3 className="mt-7 text-base font-medium text-[#f7f8f8]">{title}</h3><p className="mt-3 text-sm leading-6 text-[#8a8f98]">{copy}</p></article>;
 }

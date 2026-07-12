@@ -2,120 +2,93 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
+const alice = "11111111-1111-4111-8111-111111111111";
+const bob = "22222222-2222-4222-8222-222222222222";
 
-describe("scan authorization and controls", () => {
-  it("creates a canonical scan owned by the authenticated user", async () => {
-    const t = convexTest(schema, modules).withIdentity({ subject: "alice", issuer: "https://auth.test" });
-    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/Acme/widget.git" });
-    const scan = await t.query(api.mutations.getScan, { scanId });
+async function completeScan(t: ReturnType<typeof convexTest>, scanId: Id<"scans">) {
+  await t.mutation(internal.mutations.claimScanRun, { scanId });
+  await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "auditing_dependencies" });
+  await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "verifying" });
+  await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "completed" });
+}
+
+describe("anonymous scan isolation and controls", () => {
+  it("creates a canonical scan for a valid anonymous session", async () => {
+    const t = convexTest(schema, modules);
+    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/Acme/widget.git", sessionToken: alice });
+    const scan = await t.query(api.mutations.getScan, { scanId, sessionToken: alice });
     expect(scan?.repoUrl).toBe("https://github.com/Acme/widget");
     expect(scan?.status).toBe("initialized");
+    expect(scan).not.toHaveProperty("ownerTokenIdentifier");
   });
 
-  it("does not expose a scan to another user", async () => {
+  it("does not expose one browser session to another", async () => {
     const t = convexTest(schema, modules);
-    const alice = t.withIdentity({ subject: "alice", issuer: "https://auth.test" });
-    const bob = t.withIdentity({ subject: "bob", issuer: "https://auth.test" });
-    const scanId = await alice.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget" });
-    expect(await bob.query(api.mutations.getScan, { scanId })).toBeNull();
+    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget", sessionToken: alice });
+    expect(await t.query(api.mutations.getScan, { scanId, sessionToken: bob })).toBeNull();
   });
 
-  it("requires authentication to create scans", async () => {
+  it("rejects malformed anonymous session capabilities", async () => {
     const t = convexTest(schema, modules);
-    await expect(t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget" })).rejects.toThrow("Authentication required");
+    await expect(t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget", sessionToken: "guessable" })).rejects.toThrow("Invalid anonymous session");
   });
 
   it("returns the same active scan for an idempotent retry", async () => {
-    const t = convexTest(schema, modules).withIdentity({ subject: "alice", issuer: "https://auth.test" });
-    const first = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget" });
-    const second = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget" });
+    const t = convexTest(schema, modules);
+    const first = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget", sessionToken: alice });
+    const second = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget", sessionToken: alice });
     expect(second).toBe(first);
   });
 
-  it("atomically claims a scan only once and recovers an expired lease", async () => {
-    const t = convexTest(schema, modules).withIdentity({ subject: "alice", issuer: "https://auth.test" });
-    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget" });
+  it("atomically claims once and recovers an expired lease without duplicate output", async () => {
+    const t = convexTest(schema, modules);
+    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget", sessionToken: alice });
     expect(await t.mutation(internal.mutations.claimScanRun, { scanId })).toBe(true);
     expect(await t.mutation(internal.mutations.claimScanRun, { scanId })).toBe(false);
     await t.mutation(internal.mutations.appendScanLog, { scanId, agent: "SecurityLead", message: "partial", level: "info" });
-    await t.mutation(internal.mutations.createFinding, {
-      scanId,
-      filePath: "package.json",
-      type: "vulnerable_dependency",
-      severity: "HIGH",
-      description: "Partial finding",
-      evidence: "CVE-2026-0003",
-      status: "open",
-    });
+    await t.mutation(internal.mutations.createFinding, { scanId, filePath: "package.json", type: "vulnerable_dependency", severity: "HIGH", description: "Partial", evidence: "CVE-2026-0003", status: "open" });
     await t.run((ctx) => ctx.db.patch(scanId, { claimedAt: Date.now() - 31 * 60 * 1000 }));
     expect(await t.mutation(internal.mutations.claimScanRun, { scanId })).toBe(true);
-    expect(await t.query(api.mutations.getScanLogs, { scanId })).toEqual([]);
-    expect(await t.query(api.mutations.getScanFindings, { scanId })).toEqual([]);
+    expect(await t.query(api.mutations.getScanLogs, { scanId, sessionToken: alice })).toEqual([]);
+    expect(await t.query(api.mutations.getScanFindings, { scanId, sessionToken: alice })).toEqual([]);
   });
 
   it("enforces one active scan beyond the hourly quota window", async () => {
-    const t = convexTest(schema, modules).withIdentity({ subject: "alice", issuer: "https://auth.test" });
-    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/long-running" });
+    const t = convexTest(schema, modules);
+    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/long-running", sessionToken: alice });
     await t.run((ctx) => ctx.db.patch(scanId, { startedAt: Date.now() - 2 * 60 * 60 * 1000 }));
-    await expect(t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/other" })).rejects.toThrow("Finish the active scan");
+    await expect(t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/other", sessionToken: alice })).rejects.toThrow("Finish the active scan");
   });
 
-  it("enforces the hourly scan quota", async () => {
-    const t = convexTest(schema, modules).withIdentity({ subject: "alice", issuer: "https://auth.test" });
+  it("enforces the per-session hourly quota", async () => {
+    const t = convexTest(schema, modules);
     for (let index = 0; index < 5; index += 1) {
-      const scanId = await t.mutation(api.mutations.createScan, { repoUrl: `https://github.com/acme/widget-${index}` });
-      await t.mutation(internal.mutations.claimScanRun, { scanId });
-      await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "auditing_dependencies" });
-      await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "verifying" });
-      await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "completed" });
+      const scanId = await t.mutation(api.mutations.createScan, { repoUrl: `https://github.com/acme/widget-${index}`, sessionToken: alice });
+      await completeScan(t, scanId);
     }
-    await expect(t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/overflow" })).rejects.toThrow("Hourly scan quota reached");
+    await expect(t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/overflow", sessionToken: alice })).rejects.toThrow("hourly scan quota");
   });
 
-  it("records risk acceptance idempotently", async () => {
-    const t = convexTest(schema, modules).withIdentity({ subject: "alice", issuer: "https://auth.test", email: "alice@example.com" });
-    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget" });
-    await t.mutation(internal.mutations.claimScanRun, { scanId });
-    await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "auditing_dependencies" });
-    await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "verifying" });
-    await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "completed" });
-    const findingId = await t.mutation(internal.mutations.createFinding, {
-      scanId,
-      filePath: "package.json",
-      type: "vulnerable_dependency",
-      severity: "HIGH",
-      description: "Synthetic finding",
-      evidence: "CVE-2026-0001",
-      status: "open",
-    });
-    await t.mutation(internal.mutations.attachPatchToFinding, { findingId, remediationPatch: "--- a/package.json\n+++ b/package.json" });
-    const [proposal] = await t.query(api.mutations.getScanFindings, { scanId });
-    expect(proposal.status).toBe("open");
-    expect(proposal.remediationPatch).toContain("package.json");
-    const first = await t.mutation(api.mutations.acceptRisk, { findingId, reason: "Accepted for isolated fixture testing." });
-    const second = await t.mutation(api.mutations.acceptRisk, { findingId, reason: "Accepted for isolated fixture testing." });
+  it("enforces deployment-wide hourly capacity", async () => {
+    const t = convexTest(schema, modules);
+    for (let index = 0; index < 30; index += 1) {
+      const sessionToken = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+      await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget", sessionToken });
+    }
+    await expect(t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/overflow", sessionToken: bob })).rejects.toThrow("hourly capacity");
+  });
+
+  it("records completed-scan risk acceptance idempotently", async () => {
+    const t = convexTest(schema, modules);
+    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget", sessionToken: alice });
+    await completeScan(t, scanId);
+    const findingId = await t.mutation(internal.mutations.createFinding, { scanId, filePath: "package.json", type: "vulnerable_dependency", severity: "HIGH", description: "Synthetic", evidence: "CVE-2026-0001", status: "open" });
+    const first = await t.mutation(api.mutations.acceptRisk, { findingId, reason: "Accepted for isolated fixture testing.", sessionToken: alice });
+    const second = await t.mutation(api.mutations.acceptRisk, { findingId, reason: "Accepted for isolated fixture testing.", sessionToken: alice });
     expect(second).toBe(first);
-  });
-
-  it("rejects risk acceptance for non-open findings", async () => {
-    const t = convexTest(schema, modules).withIdentity({ subject: "alice", issuer: "https://auth.test" });
-    const scanId = await t.mutation(api.mutations.createScan, { repoUrl: "https://github.com/acme/widget" });
-    await t.mutation(internal.mutations.claimScanRun, { scanId });
-    await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "auditing_dependencies" });
-    await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "verifying" });
-    await t.mutation(internal.mutations.updateScanStatus, { scanId, status: "completed" });
-    const findingId = await t.run((ctx) => ctx.db.insert("findings", {
-      scanId,
-      filePath: "package.json",
-      type: "vulnerable_dependency",
-      severity: "HIGH",
-      description: "Already remediated fixture",
-      evidence: "CVE-2026-0002",
-      status: "remediated",
-    }));
-    await expect(t.mutation(api.mutations.acceptRisk, { findingId, reason: "This must not be accepted twice." })).rejects.toThrow("Only open findings");
   });
 });

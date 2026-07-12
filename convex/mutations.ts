@@ -1,6 +1,8 @@
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { parseGitHubRepoUrl } from "./lib/security";
+import { anonymousOwnerKey } from "./lib/session";
 
 const scanStatus = v.union(
   v.literal("initialized"),
@@ -21,41 +23,50 @@ const agent = v.union(
 );
 
 const logLevel = v.union(v.literal("info"), v.literal("warning"), v.literal("error"), v.literal("success"));
+const activeStatuses = ["initialized", "scanning_secrets", "auditing_dependencies", "writing_remediations", "verifying"] as const;
+const SCAN_LEASE_MS = 30 * 60 * 1000;
+const SESSION_HOURLY_LIMIT = 5;
+const GLOBAL_HOURLY_LIMIT = 30;
 
-async function requireIdentity(ctx: { auth: { getUserIdentity: () => Promise<{ tokenIdentifier: string; email?: string } | null> } }) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity?.tokenIdentifier) throw new Error("Authentication required.");
-  return identity;
+function exposeScan(scan: Doc<"scans">) {
+  const { ownerTokenIdentifier, claimedAt, ...publicScan } = scan;
+  void ownerTokenIdentifier;
+  void claimedAt;
+  return publicScan;
 }
 
 export const createScan = mutation({
-  args: { repoUrl: v.string() },
+  args: { repoUrl: v.string(), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const identity = await requireIdentity(ctx);
+    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
     const repository = parseGitHubRepoUrl(args.repoUrl);
-    const activeStatuses = ["initialized", "scanning_secrets", "auditing_dependencies", "writing_remediations", "verifying"] as const;
     const activeScans = await Promise.all(activeStatuses.map((status) =>
       ctx.db
         .query("scans")
-        .withIndex("by_owner_and_status", (q) => q.eq("ownerTokenIdentifier", identity.tokenIdentifier).eq("status", status))
+        .withIndex("by_owner_and_status", (q) => q.eq("ownerTokenIdentifier", ownerTokenIdentifier).eq("status", status))
         .order("desc")
         .first(),
     ));
     const activeScan = activeScans.find(Boolean);
+    const hourAgo = Date.now() - 60 * 60 * 1000;
     const recentScans = await ctx.db
       .query("scans")
-      .withIndex("by_owner_and_startedAt", (q) =>
-        q.eq("ownerTokenIdentifier", identity.tokenIdentifier).gte("startedAt", Date.now() - 60 * 60 * 1000),
-      )
+      .withIndex("by_owner_and_startedAt", (q) => q.eq("ownerTokenIdentifier", ownerTokenIdentifier).gte("startedAt", hourAgo))
       .order("desc")
-      .take(6);
+      .take(SESSION_HOURLY_LIMIT + 1);
+    const globalScans = await ctx.db
+      .query("scans")
+      .withIndex("by_startedAt", (q) => q.gte("startedAt", hourAgo))
+      .order("desc")
+      .take(GLOBAL_HOURLY_LIMIT + 1);
     if (activeScan) {
       if (activeScan.repoUrl === repository.canonicalUrl) return activeScan._id;
       throw new Error("Finish the active scan before starting another repository.");
     }
-    if (recentScans.length >= 5) throw new Error("Hourly scan quota reached. Try again later.");
+    if (recentScans.length >= SESSION_HOURLY_LIMIT) throw new Error("This browser session has reached its hourly scan quota.");
+    if (globalScans.length >= GLOBAL_HOURLY_LIMIT) throw new Error("VoidGuard is at hourly capacity. Try again later.");
     return ctx.db.insert("scans", {
-      ownerTokenIdentifier: identity.tokenIdentifier,
+      ownerTokenIdentifier,
       repoUrl: repository.canonicalUrl,
       status: "initialized",
       startedAt: Date.now(),
@@ -64,42 +75,43 @@ export const createScan = mutation({
 });
 
 export const getScan = query({
-  args: { scanId: v.id("scans") },
+  args: { scanId: v.id("scans"), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const identity = await requireIdentity(ctx);
+    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
     const scan = await ctx.db.get(args.scanId);
-    return scan?.ownerTokenIdentifier === identity.tokenIdentifier ? scan : null;
+    return scan?.ownerTokenIdentifier === ownerTokenIdentifier ? exposeScan(scan) : null;
   },
 });
 
 export const listRecentScans = query({
-  args: {},
-  handler: async (ctx) => {
-    const identity = await requireIdentity(ctx);
-    return ctx.db
+  args: { sessionToken: v.string() },
+  handler: async (ctx, args) => {
+    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
+    const scans = await ctx.db
       .query("scans")
-      .withIndex("by_owner_and_startedAt", (q) => q.eq("ownerTokenIdentifier", identity.tokenIdentifier))
+      .withIndex("by_owner_and_startedAt", (q) => q.eq("ownerTokenIdentifier", ownerTokenIdentifier))
       .order("desc")
       .take(20);
+    return scans.map(exposeScan);
   },
 });
 
 export const getScanLogs = query({
-  args: { scanId: v.id("scans") },
+  args: { scanId: v.id("scans"), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const identity = await requireIdentity(ctx);
+    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
     const scan = await ctx.db.get(args.scanId);
-    if (!scan || scan.ownerTokenIdentifier !== identity.tokenIdentifier) return [];
+    if (!scan || scan.ownerTokenIdentifier !== ownerTokenIdentifier) return [];
     return ctx.db.query("scanLogs").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).order("asc").take(250);
   },
 });
 
 export const getScanFindings = query({
-  args: { scanId: v.id("scans") },
+  args: { scanId: v.id("scans"), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const identity = await requireIdentity(ctx);
+    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
     const scan = await ctx.db.get(args.scanId);
-    if (!scan || scan.ownerTokenIdentifier !== identity.tokenIdentifier) return [];
+    if (!scan || scan.ownerTokenIdentifier !== ownerTokenIdentifier) return [];
     return ctx.db.query("findings").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).order("desc").take(100);
   },
 });
@@ -112,8 +124,6 @@ export const requireOwnedScan = internalQuery({
   },
 });
 
-const SCAN_LEASE_MS = 30 * 60 * 1000;
-
 export const claimScanRun = internalMutation({
   args: { scanId: v.id("scans") },
   handler: async (ctx, args) => {
@@ -124,8 +134,8 @@ export const claimScanRun = internalMutation({
     if (scan.status !== "initialized" && now - leaseStartedAt < SCAN_LEASE_MS) return false;
     if (scan.status !== "initialized") {
       const [logs, findings] = await Promise.all([
-        ctx.db.query("scanLogs").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).collect(),
-        ctx.db.query("findings").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).collect(),
+        ctx.db.query("scanLogs").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).take(250),
+        ctx.db.query("findings").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).take(100),
       ]);
       await Promise.all([...logs, ...findings].map((document) => ctx.db.delete(document._id)));
     }
@@ -212,13 +222,13 @@ export const attachPatchToFinding = internalMutation({
 });
 
 export const acceptRisk = mutation({
-  args: { findingId: v.id("findings"), reason: v.string() },
+  args: { findingId: v.id("findings"), reason: v.string(), sessionToken: v.string() },
   handler: async (ctx, args) => {
-    const identity = await requireIdentity(ctx);
+    const ownerTokenIdentifier = anonymousOwnerKey(args.sessionToken);
     const finding = await ctx.db.get(args.findingId);
     if (!finding) throw new Error("Finding not found.");
     const scan = await ctx.db.get(finding.scanId);
-    if (!scan || scan.ownerTokenIdentifier !== identity.tokenIdentifier) throw new Error("Finding not found.");
+    if (!scan || scan.ownerTokenIdentifier !== ownerTokenIdentifier) throw new Error("Finding not found.");
     if (scan.status !== "completed") throw new Error("Risk can be accepted only after the scan completes.");
     const reason = args.reason.trim();
     if (reason.length < 10 || reason.length > 1000) throw new Error("Provide a risk acceptance reason between 10 and 1000 characters.");
@@ -234,10 +244,10 @@ export const acceptRisk = mutation({
     await ctx.db.patch(args.findingId, { status: "accepted_risk" });
     return ctx.db.insert("risk_register", {
       findingId: args.findingId,
-      ownerTokenIdentifier: identity.tokenIdentifier,
+      ownerTokenIdentifier,
       repoUrl: scan.repoUrl,
       findingHash: `${finding.scanId}:${finding._id}`,
-      acceptedBy: identity.email ?? identity.tokenIdentifier,
+      acceptedBy: "Anonymous visitor",
       acceptedAt: Date.now(),
       reason,
     });

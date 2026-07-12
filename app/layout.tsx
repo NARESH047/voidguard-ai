@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata = {
   title: "VoidGuard AI | Autonomous Security Agency",
   description:
-    "VoidGuard AI hunts leaked secrets, audits dependencies, and prepares secure GitHub remediations.",
+    "Open, no-login security audits for public GitHub repositories with redacted evidence and source-bound advisory grounding.",
 };
 
 export default function RootLayout({
