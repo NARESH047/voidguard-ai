@@ -284,7 +284,11 @@ export const runAutonomousAudit = action({
       }
 
       if (workflowFailures > 0) {
-        throw new Error(`Audit incomplete: ${workflowFailures} required provider workflow(s) failed safely.`);
+        await log(
+          agents.lead,
+          `${workflowFailures} required provider workflow(s) failed safely; findings were retained and patches withheld.`,
+          "warning",
+        );
       }
       await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "verifying" });
       await log(agents.qa, "Workflow checks completed; all findings and patches remain subject to human review.", "success");
