@@ -175,7 +175,7 @@ export function TerminalDashboard({ isAuthenticated, authLoading, onRequireAuth 
         </aside>
       </div>
 
-      {riskFindingId && <div className="border-t border-white/[0.08] bg-[#0a0e0f] p-5"><form onSubmit={submitRisk} className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-end"><label className="field-label flex-1">Risk acceptance reason<input required minLength={10} maxLength={1000} value={riskReason} onChange={(event) => setRiskReason(event.target.value)} placeholder="Document why this risk is acceptable…" /></label><button className="primary-button justify-center px-4 py-3 text-sm">Record decision</button><button type="button" onClick={() => setRiskFindingId(null)} className="subtle-button justify-center">Cancel</button></form>{riskError && <p role="alert" className="mx-auto mt-2 max-w-3xl text-xs text-[#ff9a9a]">{riskError}</p>}</div>}
+      {isAuthenticated && riskFindingId && <div className="border-t border-white/[0.08] bg-[#0a0e0f] p-5"><form onSubmit={submitRisk} className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-end"><label className="field-label flex-1">Risk acceptance reason<input required minLength={10} maxLength={1000} value={riskReason} onChange={(event) => setRiskReason(event.target.value)} placeholder="Document why this risk is acceptable…" /></label><button className="primary-button justify-center px-4 py-3 text-sm">Record decision</button><button type="button" onClick={() => setRiskFindingId(null)} className="subtle-button justify-center">Cancel</button></form>{riskError && <p role="alert" className="mx-auto mt-2 max-w-3xl text-xs text-[#ff9a9a]">{riskError}</p>}</div>}
     </div>
   );
 }

@@ -77,7 +77,7 @@ export default function Home() {
           <div><div className="eyebrow">Authenticated operations</div><h2 className="section-title mt-3">One workspace.<br />Every decision traceable.</h2></div>
           <p className="max-w-md text-sm leading-6 text-[#879691]">Run bounded audits, watch specialist logs arrive in real time, inspect citations, and document accepted risk without leaving the workspace.</p>
         </div>
-        <TerminalDashboard isAuthenticated={isAuthenticated} authLoading={isLoading} onRequireAuth={() => setAuthMode("signup")} />
+        <TerminalDashboard key={isAuthenticated ? "authenticated" : "preview"} isAuthenticated={isAuthenticated} authLoading={isLoading} onRequireAuth={() => setAuthMode("signup")} />
       </section>
 
       <footer className="relative z-10 border-t border-white/[0.07] px-5 py-8 sm:px-8"><div className="mx-auto flex w-full max-w-7xl flex-col justify-between gap-3 text-xs text-[#596962] sm:flex-row"><span>VOIDGUARD AI / SECURITY OPERATIONS</span><span>Evidence first. Human controlled.</span></div></footer>

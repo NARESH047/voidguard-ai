@@ -117,11 +117,12 @@ export const runAutonomousAudit = action({
     if (!claimed) throw new Error("Scan has already been started or completed.");
 
     let findingCount = 0;
-    let groundingFailures = 0;
+    let workflowFailures = 0;
     try {
       await log(agents.lead, `Opening bounded read-only audit for ${scan.repoUrl}.`);
       const repository = await loadRepositoryFiles(scan.repoUrl);
-      await log(agents.lead, `Loaded ${repository.files.length} eligible files from ${repository.owner}/${repository.repo}@${repository.branch}.`);
+      await ctx.runMutation(internal.mutations.renewScanLease, { scanId: args.scanId });
+      await log(agents.lead, `Loaded ${repository.files.length} eligible files from ${repository.owner}/${repository.repo}@${repository.branch} (${repository.commitSha.slice(0, 12)}).`);
 
       for (const file of repository.files) {
         const matches = detectSecrets(file.content);
@@ -157,8 +158,9 @@ export const runAutonomousAudit = action({
           let grounding: GroundedVulnerability;
           try {
             grounding = await lookupDependencyVulnerabilities(dependency.name, dependency.version);
+            await ctx.runMutation(internal.mutations.renewScanLease, { scanId: args.scanId });
           } catch (error) {
-            groundingFailures += 1;
+            workflowFailures += 1;
             await log(
               agents.dependencies,
               `${dependency.name}@${dependency.version}: grounding failed safely (${error instanceof Error ? error.message : "unknown error"}).`,
@@ -201,19 +203,21 @@ export const runAutonomousAudit = action({
               await log(agents.qa, `${dependency.name}: patch withheld by model or deterministic package/version validation. ${qa.verdict}`, "warning");
             }
           } catch (error) {
+            workflowFailures += 1;
             await log(agents.qa, `${dependency.name}: remediation failed safely (${error instanceof Error ? error.message : "unknown error"}).`, "warning");
           }
+          await ctx.runMutation(internal.mutations.renewScanLease, { scanId: args.scanId });
           await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "auditing_dependencies" });
         }
       }
 
-      if (groundingFailures > 0) {
-        throw new Error(`Audit incomplete: ${groundingFailures} dependency grounding request(s) failed safely.`);
+      if (workflowFailures > 0) {
+        throw new Error(`Audit incomplete: ${workflowFailures} required provider workflow(s) failed safely.`);
       }
       await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "verifying" });
       await log(agents.qa, "Workflow checks completed; all findings and patches remain subject to human review.", "success");
-      await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "completed" });
       await log(agents.lead, `Audit completed with ${findingCount} finding(s). Human review is required before applying patches.`, "success");
+      await ctx.runMutation(internal.mutations.updateScanStatus, { scanId: args.scanId, status: "completed" });
       return { findingCount };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Audit failed unexpectedly.";

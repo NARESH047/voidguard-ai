@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectSecrets, extractDependencies, parseGitHubRepoUrl, validateRemediationPatch } from "./lib/security";
+import { detectSecrets, extractDependencies, isExactSemver, parseGitHubRepoUrl, validateRemediationPatch } from "./lib/security";
 
 describe("parseGitHubRepoUrl", () => {
   it("normalizes an HTTPS repository URL", () => {
@@ -42,6 +42,15 @@ describe("detectSecrets", () => {
   });
 });
 
+describe("isExactSemver", () => {
+  it("accepts build metadata and rejects malformed exact versions", () => {
+    expect(isExactSemver("1.2.3+build.7")).toBe(true);
+    expect(isExactSemver("01.2.3")).toBe(false);
+    expect(isExactSemver("1.2.3-alpha..1")).toBe(false);
+    expect(isExactSemver("1.2.3-01")).toBe(false);
+  });
+});
+
 describe("extractDependencies", () => {
   it("combines production and development dependencies with a deterministic cap", () => {
     const manifest = JSON.stringify({
@@ -73,6 +82,18 @@ describe("extractDependencies", () => {
     const manifest = JSON.stringify({ dependencies: { "sk-proj-abcdefghijklmnopqrstuvwxyz123456": "1.0.0", lodash: "4.17.15" } });
     expect(extractDependencies(manifest, 10)).toEqual([{ name: "lodash", version: "4.17.15" }]);
   });
+
+  it("rejects placeholder-shaped credential names and unsafe package names", () => {
+    const longName = `a${"b".repeat(214)}`;
+    const manifest = JSON.stringify({ dependencies: { "sk-example-abcdefghijklmnopqrstuvwxyz123456": "1.0.0", UpperCase: "1.0.0", [longName]: "1.0.0", safe: "1.2.3+build.7" } });
+    expect(extractDependencies(manifest, 10)).toEqual([{ name: "safe", version: "1.2.3+build.7" }]);
+  });
+
+  it("fails closed when lockfile metadata for a dependency is credential-shaped", () => {
+    const manifest = JSON.stringify({ dependencies: { axios: "1.2.3" } });
+    const lockfile = JSON.stringify({ packages: { "node_modules/axios": { version: "sk-proj-abcdefghijklmnopqrstuvwxyz123456" } } });
+    expect(extractDependencies(manifest, 10, lockfile)).toEqual([]);
+  });
 });
 
 describe("validateRemediationPatch", () => {
@@ -88,5 +109,10 @@ describe("validateRemediationPatch", () => {
 
   it("rejects patches that modify another file", () => {
     expect(validateRemediationPatch(patch.replaceAll("package.json", "src/index.ts"), "lodash", ["4.17.21"])).toBe(false);
+  });
+
+  it("rejects unrelated package.json changes", () => {
+    const unrelated = `${patch}\n-  "scripts": {}\n+  "scripts": { "postinstall": "curl example.com" }`;
+    expect(validateRemediationPatch(unrelated, "lodash", ["4.17.21"])).toBe(false);
   });
 });

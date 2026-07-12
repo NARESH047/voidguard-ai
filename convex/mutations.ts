@@ -33,6 +33,15 @@ export const createScan = mutation({
   handler: async (ctx, args) => {
     const identity = await requireIdentity(ctx);
     const repository = parseGitHubRepoUrl(args.repoUrl);
+    const activeStatuses = ["initialized", "scanning_secrets", "auditing_dependencies", "writing_remediations", "verifying"] as const;
+    const activeScans = await Promise.all(activeStatuses.map((status) =>
+      ctx.db
+        .query("scans")
+        .withIndex("by_owner_and_status", (q) => q.eq("ownerTokenIdentifier", identity.tokenIdentifier).eq("status", status))
+        .order("desc")
+        .first(),
+    ));
+    const activeScan = activeScans.find(Boolean);
     const recentScans = await ctx.db
       .query("scans")
       .withIndex("by_owner_and_startedAt", (q) =>
@@ -40,7 +49,6 @@ export const createScan = mutation({
       )
       .order("desc")
       .take(6);
-    const activeScan = recentScans.find((scan) => !["completed", "failed"].includes(scan.status));
     if (activeScan) {
       if (activeScan.repoUrl === repository.canonicalUrl) return activeScan._id;
       throw new Error("Finish the active scan before starting another repository.");
@@ -104,22 +112,60 @@ export const requireOwnedScan = internalQuery({
   },
 });
 
+const SCAN_LEASE_MS = 30 * 60 * 1000;
+
 export const claimScanRun = internalMutation({
   args: { scanId: v.id("scans") },
   handler: async (ctx, args) => {
     const scan = await ctx.db.get(args.scanId);
-    if (!scan || scan.status !== "initialized") return false;
-    await ctx.db.patch(args.scanId, { status: "scanning_secrets" });
+    if (!scan || ["completed", "failed"].includes(scan.status)) return false;
+    const now = Date.now();
+    const leaseStartedAt = scan.claimedAt ?? scan.startedAt;
+    if (scan.status !== "initialized" && now - leaseStartedAt < SCAN_LEASE_MS) return false;
+    if (scan.status !== "initialized") {
+      const [logs, findings] = await Promise.all([
+        ctx.db.query("scanLogs").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).collect(),
+        ctx.db.query("findings").withIndex("by_scan", (q) => q.eq("scanId", args.scanId)).collect(),
+      ]);
+      await Promise.all([...logs, ...findings].map((document) => ctx.db.delete(document._id)));
+    }
+    await ctx.db.patch(args.scanId, { status: "scanning_secrets", claimedAt: now, completedAt: undefined, errorMessage: undefined });
     return true;
   },
 });
 
+export const renewScanLease = internalMutation({
+  args: { scanId: v.id("scans") },
+  handler: async (ctx, args) => {
+    const scan = await ctx.db.get(args.scanId);
+    if (!scan || ["completed", "failed"].includes(scan.status)) return false;
+    await ctx.db.patch(args.scanId, { claimedAt: Date.now() });
+    return true;
+  },
+});
+
+const legalTransitions: Record<string, readonly string[]> = {
+  initialized: [],
+  scanning_secrets: ["auditing_dependencies"],
+  auditing_dependencies: ["writing_remediations", "verifying"],
+  writing_remediations: ["verifying", "auditing_dependencies"],
+  verifying: ["auditing_dependencies", "completed"],
+};
+
 export const updateScanStatus = internalMutation({
   args: { scanId: v.id("scans"), status: scanStatus, errorMessage: v.optional(v.string()) },
   handler: async (ctx, args) => {
+    const scan = await ctx.db.get(args.scanId);
+    if (!scan) throw new Error("Scan not found.");
+    if (scan.status === args.status) return;
+    if (["completed", "failed"].includes(scan.status)) throw new Error("Terminal scan status cannot be changed.");
+    if (args.status !== "failed" && !legalTransitions[scan.status]?.includes(args.status)) {
+      throw new Error(`Illegal scan transition: ${scan.status} -> ${args.status}.`);
+    }
     if (args.status === "completed" || args.status === "failed") {
       await ctx.db.patch(args.scanId, {
         status: args.status,
+        claimedAt: undefined,
         completedAt: Date.now(),
         ...(args.errorMessage ? { errorMessage: args.errorMessage.slice(0, 1000) } : {}),
       });
@@ -147,7 +193,7 @@ export const createFinding = internalMutation({
     cveId: v.optional(v.string()),
     citations: v.optional(v.array(v.object({ title: v.string(), url: v.string() }))),
     remediationPatch: v.optional(v.string()),
-    status: v.union(v.literal("open"), v.literal("remediated"), v.literal("accepted_risk")),
+    status: v.literal("open"),
   },
   handler: async (ctx, args) => ctx.db.insert("findings", {
     ...args,
@@ -173,13 +219,17 @@ export const acceptRisk = mutation({
     if (!finding) throw new Error("Finding not found.");
     const scan = await ctx.db.get(finding.scanId);
     if (!scan || scan.ownerTokenIdentifier !== identity.tokenIdentifier) throw new Error("Finding not found.");
+    if (scan.status !== "completed") throw new Error("Risk can be accepted only after the scan completes.");
     const reason = args.reason.trim();
     if (reason.length < 10 || reason.length > 1000) throw new Error("Provide a risk acceptance reason between 10 and 1000 characters.");
     const existing = await ctx.db
       .query("risk_register")
       .withIndex("by_finding", (q) => q.eq("findingId", args.findingId))
       .unique();
-    if (existing) return existing._id;
+    if (existing) {
+      if (finding.status !== "accepted_risk") await ctx.db.patch(args.findingId, { status: "accepted_risk" });
+      return existing._id;
+    }
     if (finding.status !== "open") throw new Error("Only open findings can be accepted as risk.");
     await ctx.db.patch(args.findingId, { status: "accepted_risk" });
     return ctx.db.insert("risk_register", {

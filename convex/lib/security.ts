@@ -71,28 +71,44 @@ export function detectSecrets(content: string): SecretMatch[] {
   return findings;
 }
 
-const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
-const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const EXACT_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+export function isExactSemver(value: string) {
+  return EXACT_SEMVER.test(value);
+}
+
+function isValidPackageName(value: string) {
+  return value.length <= 214 && PACKAGE_NAME.test(value);
+}
+
+function hasCredentialShape(value: string) {
+  return SECRET_PATTERNS.some(({ pattern }) => new RegExp(pattern.source, pattern.flags).test(value));
+}
 
 function lockfileVersions(packageLock: string | undefined) {
   const versions = new Map<string, string>();
-  if (!packageLock) return versions;
+  const invalid = new Set<string>();
+  if (!packageLock) return { versions, invalid };
+  const consider = (name: string, version: unknown) => {
+    if (!isValidPackageName(name)) return;
+    if (typeof version !== "string" || hasCredentialShape(`${name}:${version}`) || !isExactSemver(version)) {
+      invalid.add(name);
+      versions.delete(name);
+      return;
+    }
+    if (!invalid.has(name)) versions.set(name, version);
+  };
   try {
     const parsed = JSON.parse(packageLock) as { packages?: Record<string, { version?: unknown }>; dependencies?: Record<string, { version?: unknown }> };
     for (const [path, entry] of Object.entries(parsed.packages ?? {})) {
-      if (!path.startsWith("node_modules/") || typeof entry.version !== "string") continue;
-      const name = path.slice("node_modules/".length);
-      if (PACKAGE_NAME.test(name) && EXACT_VERSION.test(entry.version)) versions.set(name, entry.version);
+      if (path.startsWith("node_modules/")) consider(path.slice("node_modules/".length), entry.version);
     }
-    for (const [name, entry] of Object.entries(parsed.dependencies ?? {})) {
-      if (PACKAGE_NAME.test(name) && typeof entry.version === "string" && EXACT_VERSION.test(entry.version) && !versions.has(name)) {
-        versions.set(name, entry.version);
-      }
-    }
+    for (const [name, entry] of Object.entries(parsed.dependencies ?? {})) consider(name, entry.version);
   } catch {
     throw new Error("Repository lockfile is not a valid package-lock.json file.");
   }
-  return versions;
+  return { versions, invalid };
 }
 
 export function extractDependencies(packageJson: string, limit: number, packageLock?: string) {
@@ -112,30 +128,32 @@ export function extractDependencies(packageJson: string, limit: number, packageL
       .filter((entry): entry is [string, string] => typeof entry[1] === "string")
       .sort(([a], [b]) => a.localeCompare(b));
   };
-  const installed = lockfileVersions(packageLock);
+  const { versions: installed, invalid: invalidLockEntries } = lockfileVersions(packageLock);
   const production = toEntries(manifest.dependencies);
   const productionNames = new Set(production.map(([name]) => name));
   const development = toEntries(manifest.devDependencies).filter(([name]) => !productionNames.has(name));
   return [...production, ...development]
     .filter(([name, declared]) =>
-      PACKAGE_NAME.test(name)
-      && detectSecrets(`${name}:${declared}:${installed.get(name) ?? ""}`).length === 0
-      && (installed.has(name) || EXACT_VERSION.test(declared)),
+      isValidPackageName(name)
+      && !invalidLockEntries.has(name)
+      && !hasCredentialShape(`${name}:${declared}:${installed.get(name) ?? ""}`)
+      && (installed.has(name) || isExactSemver(declared)),
     )
     .slice(0, Math.max(0, limit))
     .map(([name, declared]) => ({ name, version: installed.get(name) ?? declared }));
 }
 
 export function validateRemediationPatch(patch: string, packageName: string, fixedVersions: string[]) {
-  if (!patch || patch.length > 20_000 || !PACKAGE_NAME.test(packageName)) return false;
+  if (!patch || patch.length > 20_000 || !isValidPackageName(packageName)) return false;
   const lines = patch.split("\n");
   const oldFiles = lines.filter((line) => line.startsWith("--- "));
   const newFiles = lines.filter((line) => line.startsWith("+++ "));
   if (oldFiles.length !== 1 || newFiles.length !== 1 || oldFiles[0] !== "--- a/package.json" || newFiles[0] !== "+++ b/package.json") return false;
+  const removedLines = lines.filter((line) => line.startsWith("-") && !line.startsWith("---"));
+  const addedLines = lines.filter((line) => line.startsWith("+") && !line.startsWith("+++"));
+  if (removedLines.length !== 1 || addedLines.length !== 1) return false;
   const escapedName = packageName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const removed = lines.some((line) => new RegExp(`^-\\s*"${escapedName}"\\s*:`).test(line));
-  const addedVersions = lines
-    .map((line) => line.match(new RegExp(`^\\+\\s*"${escapedName}"\\s*:\\s*"([^"]+)"`))?.[1])
-    .filter((value): value is string => Boolean(value));
-  return removed && addedVersions.length === 1 && fixedVersions.includes(addedVersions[0]);
+  if (!new RegExp(`^-\\s*"${escapedName}"\\s*:\\s*"[^"]+"\\s*,?\\s*$`).test(removedLines[0])) return false;
+  const addedVersion = addedLines[0].match(new RegExp(`^\\+\\s*"${escapedName}"\\s*:\\s*"([^"]+)"\\s*,?\\s*$`))?.[1];
+  return Boolean(addedVersion && isExactSemver(addedVersion) && fixedVersions.includes(addedVersion));
 }

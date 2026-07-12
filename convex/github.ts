@@ -39,10 +39,22 @@ function shouldRead(path: string, size: number) {
 }
 
 export function decodeBoundedBase64(value: string, maxBytes: number) {
-  const binary = atob(value.replace(/\s/g, ""));
-  if (binary.length > maxBytes) return null;
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  return { content: new TextDecoder().decode(bytes), size: bytes.byteLength };
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) return null;
+  const maxEncodedLength = Math.ceil(maxBytes / 3) * 4;
+  let compact = "";
+  for (const character of value) {
+    if (/\s/.test(character)) continue;
+    compact += character;
+    if (compact.length > maxEncodedLength) return null;
+  }
+  try {
+    const binary = atob(compact);
+    if (binary.length > maxBytes) return null;
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return { content: new TextDecoder().decode(bytes), size: bytes.byteLength };
+  } catch {
+    return null;
+  }
 }
 
 export async function loadRepositoryFiles(repoUrl: string) {
@@ -81,5 +93,5 @@ export async function loadRepositoryFiles(repoUrl: string) {
     files.push({ path: candidate.path, content: decoded.content, size: decoded.size });
   }
   if (files.length === 0) throw new Error("No supported source, configuration, or manifest files were found.");
-  return { owner, repo, canonicalUrl, branch, files };
+  return { owner, repo, canonicalUrl, branch, commitSha: commit.sha, files };
 }

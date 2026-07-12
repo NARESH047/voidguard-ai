@@ -20,12 +20,14 @@ VoidGuard AI is an authenticated security operations workspace deployed as a sta
 - Scan, log, finding, and risk-register access is checked against the authenticated identity.
 - Repository acquisition is limited to public repositories and bounded by file count, file size, repository size, and extension allowlists. Private repositories require future per-user GitHub App authorization.
 - GitHub reads are pinned to one commit and decoded content is rechecked against the byte limit.
+- Exact dependency versions use SemVer-compliant validation; unsafe manifest or lockfile metadata is rejected.
 - Dependency findings require exact-version output and authoritative HTTPS citations.
 - Citation URLs must match source records emitted by the Responses web-search tool.
 - Dependency versions come from package-lock.json when available; unproven ranges are skipped.
 - Generated patches require a separate QA verdict, deterministic package/version validation, and remain review-only.
 - Provider or grounding failures mark the scan failed rather than presenting a partial audit as complete.
 - Each account is limited to one active scan and five scans per rolling hour.
+- Active scans use renewable leases, stale attempts restart cleanly, and terminal transitions cannot be rewritten.
 - Production environment values must never be copied into repository files.
 
 ## Verification

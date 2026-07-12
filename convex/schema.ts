@@ -31,12 +31,14 @@ export default defineSchema({
     ownerTokenIdentifier: v.string(),
     repoUrl: v.string(),
     status: scanStatus,
+    claimedAt: v.optional(v.number()),
     startedAt: v.number(),
     completedAt: v.optional(v.number()),
     errorMessage: v.optional(v.string()),
   })
     .index("by_owner", ["ownerTokenIdentifier"])
-    .index("by_owner_and_startedAt", ["ownerTokenIdentifier", "startedAt"]),
+    .index("by_owner_and_startedAt", ["ownerTokenIdentifier", "startedAt"])
+    .index("by_owner_and_status", ["ownerTokenIdentifier", "status"]),
   scanLogs: defineTable({
     scanId: v.id("scans"),
     agent: v.union(
