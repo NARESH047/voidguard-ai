@@ -130,6 +130,26 @@ export default function Home() {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [activeMetric, setActiveMetric] = useState("Awaiting target acquisition");
 
+  const playAlert = () => {
+    if (!audioEnabled || typeof window === "undefined") return;
+
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+
+    const context = new AudioContextClass();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.frequency.value = 660;
+    gain.gain.setValueAtTime(0.04, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.18);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.18);
+  };
+
   const repoPreview = useMemo(() => {
     if (!repositoryUrl.trim()) {
       return "github.com/your-org/critical-repo";
@@ -173,6 +193,7 @@ export default function Home() {
     for (const [index, stage] of AUDIT_STAGES.entries()) {
       setActiveMetric(stage.label.replace(/\.\.\.$/, ""));
       await wait(index === 0 ? 500 : 320);
+      if (stage.tone === "critical") playAlert();
       await streamStage(stage.label, stage.tone);
     }
 
@@ -182,11 +203,8 @@ export default function Home() {
   };
 
   const submitWaitlist = async (payload: WaitlistPayload) => {
-    // Replace this mock with a real Convex mutation when the schema is ready.
-    // Example:
-    // const joinWaitlist = useMutation(api.waitlist.join);
-    // await joinWaitlist(payload);
-    await wait(1700);
+    // Demo-only flow. Replace this with a Convex mutation when the schema is ready.
+    await wait(500);
     return payload;
   };
 
@@ -450,8 +468,8 @@ export default function Home() {
                 VoidGuard Crew is ready to protect your codebase.
               </h2>
               <p className="mt-3 text-sm leading-6 text-[#9bffbf]">
-                Enter your email to authorize deployment. We&apos;ll sync your live queue position,
-                provision the audit crew, and prep the GitHub remediation rail.
+                Enter your email to preview the operator handoff. This interactive demo does not
+                transmit or store your information yet.
               </p>
             </div>
             <div className="border-2 border-[#ffaa00] bg-[#120d00] px-4 py-3 text-xs uppercase tracking-[0.26em] text-[#ffd37a]">
@@ -491,16 +509,16 @@ export default function Home() {
             <div className="border-double border-4 border-[#124d29] bg-[#010501] p-4 text-sm leading-6 text-[#a8ffc8]">
               {submitState === "success" ? (
                 <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-[0.3em] text-[#ffaa00]">deployment handshake complete</div>
+                  <div className="text-xs uppercase tracking-[0.3em] text-[#ffaa00]">demo handshake complete</div>
                   <p className="text-base text-[#ecffec]">
-                    DECRYPTING ACCESS KEY... ACCESS GRANTED. Welcome to VoidGuard, Agent {email}. Live queue tracking synced.
+                    ACCESS PREVIEW GRANTED. Agent {email}, your demo request was processed locally. No data was transmitted.
                   </p>
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-[0.3em] text-[#ffaa00]">Convex binding placeholder</div>
+                  <div className="text-xs uppercase tracking-[0.3em] text-[#ffaa00]">Demo mode</div>
                   <p>
-                    The submit handler is wired for a standard React flow and is ready to swap to a Convex mutation call as soon as the waitlist schema lands.
+                    The audit and handoff are simulated in the browser. Connect a Convex waitlist mutation when the production schema is ready.
                   </p>
                 </div>
               )}
